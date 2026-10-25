@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# PyInstaller / Nuitka
+build/dist/
+build/build/
+*.spec.bak
+
+# Runtime data (local-only, never commit customer data)
+data/
+records/
+logs/
+*.wav
+*.opus
+*.mp3
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+tests/stubs/build/
+tests/screens/

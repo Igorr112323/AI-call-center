@@ -1,0 +1,33 @@
+# ---------------------------------------------------------------------------
+# Voice AI Sales Agent — runtime dependencies
+# Pin major versions; validated on Windows 10/11 x64, Python 3.11
+# ---------------------------------------------------------------------------
+
+# GUI / packaging (full distribution: Essentials + QtMultimedia for the call player)
+PySide6>=6.6,<6.13
+pyinstaller>=6.3
+
+# Async HTTP (1C OData / HTTP-services, Groq LLM)
+httpx>=0.27,<1.0
+
+# SIP telephony — pjsua2 official Python bindings (PJSIP, GPL/alternative license)
+# Windows wheels: pip install pjsua2 (https://github.com/pjsip/pjproject)
+pjsua2>=2.14 ; platform_system == "Windows"
+
+# VAD — Silero VAD (https://github.com/snakers4/silero-vad), MIT
+torch>=2.1
+onnxruntime>=1.17
+
+# Local STT alternative — Faster-Whisper (https://github.com/SYSTRAN/faster-whisper), MIT
+# Cloud STT (Yandex SpeechKit v3) uses grpc:
+grpcio>=1.60
+grpcio-tools>=1.60
+faster-whisper>=1.0 ; platform_system == "Windows"
+
+# Local TTS alternatives (pick one; cloud Yandex TTS needs no local model)
+# F5-TTS: https://github.com/SWivid/F5-TTS ; fish-speech: https://github.com/fishaudio/fish-speech
+soundfile>=0.12
+numpy>=1.26
+
+# Utility
+python-dateutil>=2.9
