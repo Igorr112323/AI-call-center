@@ -116,7 +116,10 @@ app/
   ui/                    PySide6: 4 вкладки, master-detail, QSS Industrial Dark Slate
     text_call_window.py  окно текстового симулятора: транскрипт, инспектор слотов, RTT
   resources/style.qss    единая дизайн-система (палитра, состояния, 4px скроллбары)
-tests/                   67 pytest-кейсов + offscreen UI smoke + рендер скриншотов
+tests/                   140 pytest-кейсов + offscreen UI smoke + рендер скриншотов
+presets/                 3 демо-каталога по 50 SKU (один клик во вкладке каталога)
+scripts/benchmark_engine.py  латентность, soak 50 звонков, проверка PRAGMA/WAL
+AUDIT_REPORT.md          релизный аудит: дефекты, замеры, демо за 60 секунд
 VoiceSalesAgent.spec     PyInstaller onefile
 ```
 
@@ -128,7 +131,9 @@ python -m venv .venv
 pip install -r requirements.txt
 
 python run.py                     # GUI
-python -m pytest tests            # 67 тестов, GUI не требуется
+python run.py --selfcheck         # headless-проверка модулей и ресурсов сборки
+python -m pytest tests            # 140 тестов, GUI не требуется
+python scripts/benchmark_engine.py  # латентность/память/WAL, ненулевой код при провале
 ```
 
 Headless-проверка интерфейса (Linux/CI): см. `tests/stubs/generate_stubs.py` —
