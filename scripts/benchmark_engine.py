@@ -45,10 +45,13 @@ def _percentile(samples: list[float], pct: float) -> float:
 
 
 def _rss_mb() -> float:
-    for line in Path("/proc/self/status").read_text().splitlines():
-        if line.startswith("VmRSS:"):
-            return int(line.split()[1]) / 1024
-    return 0.0  # non-Linux fallback
+    try:
+        for line in Path("/proc/self/status").read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                return int(line.split()[1]) / 1024
+    except (OSError, ValueError):
+        pass  # Windows/macOS: RSS measurement unavailable, treated as zero
+    return 0.0
 
 
 def _malloc_trim() -> None:
