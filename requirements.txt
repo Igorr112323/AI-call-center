@@ -15,6 +15,7 @@ openpyxl>=3.1
 reportlab>=4.0
 pillow>=10.0
 comtypes>=1.4.0; platform_system == "Windows"
+piper-tts>=1.2,<2; platform_system == "Windows"
 sounddevice>=0.4
 numpy>=1.26
 

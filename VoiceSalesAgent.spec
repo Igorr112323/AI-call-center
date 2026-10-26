@@ -4,7 +4,10 @@
 Build:  pyinstaller VoiceSalesAgent.spec --noconfirm
 Output: dist/VoiceSalesAgent.exe (onefile, windowed, no console window)
 """
+from pathlib import Path
+
 from PyInstaller.utils.hooks import (
+    collect_all,
     collect_data_files,
     collect_dynamic_libs,
     collect_submodules,
@@ -44,6 +47,19 @@ hiddenimports += ["sounddevice", "numpy"]
 # comtypes drives the in-process SAPI voice; dynamic dispatch avoids the
 # generated-wrapper cache, but the package submodules must still be bundled
 hiddenimports += collect_submodules("comtypes")
+# Piper neural voice: engine package + ONNX Runtime (espeak-ng data ships
+# inside the piper wheel, so collect_all is required, not just submodules)
+for _pkg in ("piper", "onnxruntime"):
+    _d, _b, _h = collect_all(_pkg)
+    datas += _d
+    binaries += _b
+    hiddenimports += _h
+# the neural voice model itself is downloaded by CI before packaging
+_piper_dir = Path("app/resources/piper")
+if _piper_dir.is_dir():
+    for _model_file in _piper_dir.iterdir():
+        if _model_file.is_file() and _model_file.name != ".gitkeep":
+            datas.append((str(_model_file), "app/resources/piper"))
 
 a = Analysis(
     ["run.py"],

@@ -38,6 +38,12 @@ def selfcheck() -> int:
 
         assert resource_path("style.qss").exists()
         assert resource_path("fonts/DejaVuSans.ttf").exists()
+        # Frozen builds must ship the neural voice; source checkouts may
+        # legitimately lack it (model is downloaded only on the build host)
+        if getattr(sys, "frozen", False):
+            from app.voice.piper_tts import piper_model_paths
+
+            assert piper_model_paths() is not None, "bundled Piper voice missing"
         for filename in (
             "actuators_catalog.xlsx",
             "rvd_hydraulics_catalog.xlsx",

@@ -24,6 +24,10 @@ logs/
 *.sqlite
 *.sqlite3
 
+# Piper neural voice model — downloaded by CI at build time, never committed
+app/resources/piper/*.onnx
+app/resources/piper/*.onnx.json
+
 # IDE / OS
 .idea/
 .vscode/

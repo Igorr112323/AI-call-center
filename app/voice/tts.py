@@ -1,9 +1,11 @@
 """Text-to-speech providers.
 
-* SapiTts      — built-in offline Windows speech (System.Speech), no keys;
+* ChainedTts  — ordered failover chain, dead providers are skipped once;
+* PiperTts    — local neural VITS voice (ru_RU Irina), ONNX, fully offline;
+* SapiTts     — built-in offline Windows speech (System.Speech), no keys;
 * YandexTtsV3 — branded Russian voices, gRPC streaming, sub-300 ms first chunk;
-* F5Tts        — local SOTA zero-shot voice clone (https://github.com/SWivid/F5-TTS);
-* MockTts      — offline PCM tone keeping the pipeline fully runnable.
+* F5Tts       — local SOTA zero-shot voice clone (https://github.com/SWivid/F5-TTS);
+* MockTts     — offline PCM tone keeping the pipeline fully runnable.
 """
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ import tempfile
 from pathlib import Path
 
 from ..config import TtsConfig
+from .piper_tts import PiperTts, is_piper_available
 from .sapi_com import decode_wav as decode_wav_bytes
 
 log = logging.getLogger(__name__)
@@ -35,6 +38,42 @@ class TTSProvider:
         yield await self.synthesize(text)
 
     async def aclose(self) -> None: ...
+
+
+class ChainedTts(TTSProvider):
+    """Try providers in order; a provider that fails once is retired.
+
+    Guarantees the call never crashes on speech errors: when every real
+    provider is dead the final MockTts produces the timing tone, and a
+    total failure still degrades to short PCM silence.
+    """
+
+    def __init__(self, providers: list, sample_rate: int):
+        self.providers = [p for p in providers if p is not None]
+        self.sample_rate = sample_rate
+        self._retired: set[int] = set()
+
+    async def synthesize(self, text: str) -> bytes:
+        if not text.strip():
+            return b""
+        for provider in self.providers:
+            if id(provider) in self._retired:
+                continue
+            try:
+                return await provider.synthesize(text)
+            except Exception:  # noqa: BLE001 - speech must never break a call
+                self._retired.add(id(provider))
+                log.warning("TTS provider %s failed, failing over",
+                            type(provider).__name__, exc_info=True)
+        log.error("All TTS providers failed, returning silence")
+        return b"\x00\x00" * (self.sample_rate // 4)
+
+    async def aclose(self) -> None:
+        for provider in self.providers:
+            try:
+                await provider.aclose()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 class MockTts(TTSProvider):
@@ -249,23 +288,49 @@ def _tone_pcm(n_samples: int, sample_rate: int, freq: float = 220.0) -> bytes:
     return bytes(frames)
 
 
+def _native_chain(config: TtsConfig, *, prefer: str) -> TTSProvider:
+    """Offline chain: neural Piper first (when bundled), then OS SAPI, tone."""
+    chain = []
+    if prefer in ("auto", "piper") and is_piper_available():
+        chain.append(PiperTts(config))
+    if prefer in ("auto", "sapi") and sys.platform == "win32":
+        chain.append(SapiTts(config))
+    chain.append(MockTts(config))
+    if len(chain) == 1:
+        return chain[0]
+    return ChainedTts(chain, config.sample_rate)
+
+
 def build_tts(config: TtsConfig) -> TTSProvider:
     if config.provider == "yandex_v3":
         return YandexTtsV3(config)
     if config.provider == "f5":
         return F5Tts(config)
-    if config.provider == "sapi":
-        if sys.platform == "win32":
-            log.info("TTS running on built-in Windows SAPI voice")
-            return SapiTts(config)
-        log.warning("SAPI TTS selected but host is %s; falling back to mock", sys.platform)
-        return MockTts(config)
     if config.provider == "mock":
         log.info("TTS running in mock mode")
         return MockTts(config)
-    # "auto" (default): real offline voice on Windows, tone stub elsewhere
-    if sys.platform == "win32":
+    if config.provider == "piper":
+        if is_piper_available():
+            log.info("TTS running on bundled Piper neural voice")
+            return ChainedTts(
+                [PiperTts(config),
+                 SapiTts(config) if sys.platform == "win32" else None,
+                 MockTts(config)], config.sample_rate)
+        log.warning("Piper selected but model is not bundled; using native chain")
+        return _native_chain(config, prefer="auto")
+    if config.provider == "sapi":
+        if sys.platform == "win32":
+            log.info("TTS running on built-in Windows SAPI voice")
+            return ChainedTts([SapiTts(config), MockTts(config)],
+                              config.sample_rate)
+        log.warning("SAPI TTS selected but host is %s; falling back to mock",
+                    sys.platform)
+        return MockTts(config)
+    # "auto" (default): neural Piper -> OS SAPI -> tone stub
+    if is_piper_available():
+        log.info("TTS auto-selected bundled Piper neural voice")
+    elif sys.platform == "win32":
         log.info("TTS auto-selected built-in Windows SAPI voice")
-        return SapiTts(config)
-    log.info("TTS auto-selected mock mode (no native speech engine)")
-    return MockTts(config)
+    else:
+        log.info("TTS auto-selected mock mode (no native speech engine)")
+    return _native_chain(config, prefer="auto")

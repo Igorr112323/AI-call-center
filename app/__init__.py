@@ -1,5 +1,5 @@
 """Voice AI Sales Agent — autonomous desktop B2B sales assistant with 1C integration."""
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 APP_NAME = "AISalesAgent"
 APP_DISPLAY_NAME = "Voice Sales Agent"
