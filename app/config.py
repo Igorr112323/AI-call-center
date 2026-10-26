@@ -149,7 +149,14 @@ class CatalogConfig:
     last_import_path: str = ""
     fuzzy_min_score: int = 40          # 0..100, порог уверенности совпадения
     quote_company_name: str = "ООО «Промпривод»"
-    quote_inn: str = ""
+    quote_inn: str = "2310000000"
+    quote_kpp: str = "231001001"
+    quote_ogrn: str = "1232300000000"
+    quote_bank: str = "Краснодарское отделение № 8619 ПАО Сбербанк"
+    quote_bank_account: str = "40702810400000012345"
+    quote_corr_account: str = "30101810100000000602"
+    quote_bik: str = "040349602"
+    quote_legal_address: str = "350000, г. Краснодар, ул. Промышленная, 12"
     quote_vat_rate: float = 20.0       # НДС, %; 0 — без НДС
 
 
