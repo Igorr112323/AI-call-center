@@ -56,24 +56,33 @@ jobs:
           import sys
           import traceback
           try:
+              print("phase: import comtypes", flush=True)
               import comtypes
-              print("comtypes", getattr(comtypes, "__version__", "?"))
+              print("comtypes", getattr(comtypes, "__version__", "?"), flush=True)
               from app.voice.sapi_com import NativeSapiRenderer, decode_wav
+              print("phase: construct renderer", flush=True)
               r = NativeSapiRenderer(rate=1)
+              print("phase: render_wav", flush=True)
               wav = r.render_wav("Проверка голосового движка")
+              print("phase: decode wav, bytes=", len(wav), flush=True)
               pcm, rate, ch = decode_wav(wav)
               assert rate > 0 and len(pcm) > 1000
-              print(f"Native SAPI OK: {rate} Hz, {len(pcm)} PCM bytes")
+              print(f"Native SAPI OK: {rate} Hz, {len(pcm)} PCM bytes", flush=True)
           except Exception:
               msg = " | ".join(traceback.format_exc().splitlines())[:1450]
-              print(f"::error title=SAPI native smoke failed::{msg}")
-              sys.stdout.flush()
+              print(f"::error title=SAPI native smoke failed::{msg}", flush=True)
               raise
           '@
           Set-Content -Path "$env:TEMP\sapi_native_smoke.py" -Value $py -Encoding utf8
           $env:PYTHONPATH = (Get-Location).Path
-          python "$env:TEMP\sapi_native_smoke.py"
-          if ($LASTEXITCODE -ne 0) { throw "Native SAPI smoke failed (see annotation)" }
+          $out = python -u "$env:TEMP\sapi_native_smoke.py" 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) {
+            $msg = ($out -replace "`r?`n", " | ")
+            if ($msg.Length -gt 1400) { $msg = $msg.Substring($msg.Length - 1400) }
+            Write-Host "::error title=SAPI native smoke failed::$msg"
+            throw "Native SAPI smoke failed (see annotation)"
+          }
+          Write-Host $out
       - name: Verify SAPI PowerShell fallback path
         shell: powershell
         run: |
