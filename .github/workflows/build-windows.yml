@@ -37,7 +37,7 @@ jobs:
           python -m pytest tests --ignore=tests/ui_smoke.py -q --junitxml=pytest.xml 2>&1 | tee pytest.log
           status=${PIPESTATUS[0]}
           if [ "$status" != "0" ]; then
-            python -c "from pathlib import Path; lines=[l for l in Path('pytest.log').read_text(encoding='utf-8', errors='replace').splitlines() if l.startswith(('FAILED','ERROR','E  ','E ')) or 'Error' in l]; print('::error::' + ' | '.join(lines)[:1500])"
+            python -c "import xml.etree.ElementTree as ET; root=ET.parse('pytest.xml').getroot(); fails=[]; [fails.append((tc.get('classname','')+'.'+tc.get('name','')+': '+(el.text or '')[:400])) for tc in root.iter('testcase') for el in tc if el.tag in ('failure','error')]; print('::error title=pytest failures::' + ' || '.join(fails)[:1500])"
           fi
           exit $status
 
