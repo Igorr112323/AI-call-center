@@ -191,6 +191,7 @@ class CallEngine:
         )
         self.emit({"type": "call_ended", "call_id": self._call_id,
                    "status": status.value, "duration": duration})
+        self.storage.checkpoint()
         self._dialog = None
         self._call_id = None
 
@@ -306,6 +307,7 @@ class CallEngine:
         call_id = self._call_id
         self.emit({"type": "call_ended", "call_id": call_id,
                    "status": status.value, "duration": duration, "pdf": pdf_path})
+        self.storage.checkpoint()
         self._dialog = None
         self._call_id = None
         self._text_session = False

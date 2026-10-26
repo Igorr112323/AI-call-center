@@ -11,6 +11,7 @@ from .models import CallRecord, CallStatus, Order, OrderItem, Speaker, Transcrip
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
+PRAGMA synchronous=NORMAL;
 PRAGMA foreign_keys=ON;
 
 CREATE TABLE IF NOT EXISTS clients (
@@ -101,6 +102,16 @@ class Storage:
             if not getattr(self, "_closed", False):
                 self._conn.close()
                 self._closed = True
+
+    def checkpoint(self) -> None:
+        """Fold the WAL back into the main DB file (PASSIVE, non-blocking)."""
+        with self._lock:
+            if getattr(self, "_closed", False):
+                return
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except sqlite3.DatabaseError:
+                pass
 
     # ------------------------------------------------------------------ clients
     def upsert_client(self, phone: str, name: str = "", company: str = "") -> int:
