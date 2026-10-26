@@ -71,8 +71,8 @@ class LocalAudioAgent:
             self._play_queue.append(pcm16)
 
     def start(self, on_frame: FrameCallback) -> None:
-        if not AVAILABLE:
-            raise RuntimeError("sounddevice/PortAudio unavailable")
+        if not audio_devices_available():
+            raise RuntimeError("sounddevice/PortAudio недоступны или нет аудиоустройств")
         self._on_frame = on_frame
         self._input = sd.InputStream(
             samplerate=self.sample_rate, channels=1, dtype="int16",
@@ -138,9 +138,27 @@ class LocalAudioAgent:
         return np.frombuffer(pcm[: frames * 2], dtype="<i2").reshape(-1, 1)
 
 
+def audio_devices_available() -> bool:
+    """True only when PortAudio is importable AND exposes at least one device.
+
+    CI runners and headless servers often have the sounddevice wheel but no
+    audio hardware: ``query_devices()`` then raises or returns an empty list.
+    """
+    if not AVAILABLE:
+        return False
+    try:
+        return len(sd.query_devices()) > 0
+    except Exception as exc:  # PortAudioError on device-less hosts
+        log.warning("no audio devices visible to PortAudio: %s", exc)
+        return False
+
+
 def build_local_agent(level_callback: LevelCallback | None = None):
-    if AVAILABLE:
+    if audio_devices_available():
         return LocalAudioAgent(level_callback)
-    log.warning("sounddevice unavailable (%s); local mic mode disabled",
-                _IMPORT_ERROR if "_IMPORT_ERROR" in globals() else "unknown")
+    if AVAILABLE:
+        log.warning("PortAudio present but no audio devices; local mic disabled")
+    else:
+        log.warning("sounddevice unavailable (%s); local mic mode disabled",
+                    _IMPORT_ERROR if "_IMPORT_ERROR" in globals() else "unknown")
     return NullLocalAgent()

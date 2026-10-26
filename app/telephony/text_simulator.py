@@ -38,7 +38,10 @@ class SpeakerPlayer:
 
     @property
     def available(self) -> bool:
-        return AUDIO_AVAILABLE
+        # Import success alone is not enough: headless hosts may have the
+        # wheel installed without any playback device.
+        from .local_audio import audio_devices_available
+        return AUDIO_AVAILABLE and audio_devices_available()
 
     def play(self, pcm: bytes, sample_rate: int) -> None:
         if not AUDIO_AVAILABLE or not pcm:
