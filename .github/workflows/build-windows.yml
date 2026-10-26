@@ -71,6 +71,7 @@ jobs:
               raise
           '@
           Set-Content -Path "$env:TEMP\sapi_native_smoke.py" -Value $py -Encoding utf8
+          $env:PYTHONPATH = (Get-Location).Path
           python "$env:TEMP\sapi_native_smoke.py"
           if ($LASTEXITCODE -ne 0) { throw "Native SAPI smoke failed (see annotation)" }
       - name: Verify SAPI PowerShell fallback path
