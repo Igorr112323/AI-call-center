@@ -4,36 +4,60 @@
 Build:  pyinstaller VoiceSalesAgent.spec --noconfirm
 Output: dist/VoiceSalesAgent.exe (onefile, windowed, no console window)
 """
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import (
+    collect_data_files,
+    collect_dynamic_libs,
+    collect_submodules,
+)
 
 datas = [
     ("app/resources/style.qss", "app/resources"),
     ("app/resources/chevron-down.png", "app/resources"),
     ("app/resources/check.png", "app/resources"),
+    # embedded Cyrillic TTFs for PDF generation + their free-license notice
+    ("app/resources/fonts/DejaVuSans.ttf", "app/resources/fonts"),
+    ("app/resources/fonts/DejaVuSans-Bold.ttf", "app/resources/fonts"),
+    ("app/resources/fonts/DejaVu-LICENSE.txt", "app/resources/fonts"),
+    # one-click demo catalogs, resolved via app.paths.preset_path at runtime
+    ("presets/actuators_catalog.xlsx", "presets"),
+    ("presets/rvd_hydraulics_catalog.xlsx", "presets"),
+    ("presets/corrugated_boxes_catalog.xlsx", "presets"),
 ]
 datas += collect_data_files("PySide6", include_py_files=False)
 # reportlab ships font/resource data used at PDF build time
 datas += collect_data_files("reportlab")
+# sounddevice loads the bundled PortAudio shared library at import time
+datas += collect_data_files("sounddevice")
+
+binaries = collect_dynamic_libs("sounddevice")
 
 hiddenimports = collect_submodules("app")
 # QtSvg backs the monochrome icon renderer; QtMultimedia backs the call player
 hiddenimports += ["PySide6.QtSvg", "PySide6.QtMultimedia", "PySide6.QtMultimediaWidgets"]
 # standalone-mode runtimes
 hiddenimports += collect_submodules("openpyxl")
-hiddenimports += ["sounddevice", "reportlab", "reportlab.pdfbase", "reportlab.platypus"]
+hiddenimports += [
+    "sounddevice",
+    "numpy",
+    "reportlab",
+    "reportlab.pdfbase",
+    "reportlab.pdfbase.ttfonts",
+    "reportlab.platypus",
+]
 
 a = Analysis(
     ["run.py"],
     pathex=[],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    # Heavy optional ML stacks are deployed as documented add-ons, not bundled
+    # Heavy optional ML stacks (Silero VAD via torch.hub, faster-whisper,
+    # F5-TTS) are documented add-ons, downloaded on demand — not bundled.
     excludes=["tkinter", "matplotlib", "pytest", "torch", "faster_whisper",
-              "f5_tts", "xlrd"],
+              "f5_tts", "xlrd", "pymupdf", "fitz", "PIL"],
     noarchive=False,
 )
 
@@ -54,5 +78,6 @@ exe = EXE(
     runtime_tmpdir=None,
     console=False,           # GUI application
     disable_windowed_traceback=False,
-    icon=None,               # drop app.ico next to the spec and set icon="app.ico"
+    # rendered by scripts/build_assets.py from the monochrome mic mark
+    icon="app/resources/app.ico",
 )
