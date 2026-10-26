@@ -127,8 +127,10 @@ def test_missing_model_raises_and_marks_failed(monkeypatch):
 
 def test_engine_import_failure_is_wrapped(monkeypatch, tmp_path):
     _fake_model_files(monkeypatch, tmp_path)
-    # piper is not installed in the test venv; make sure it stays unimported
-    monkeypatch.delitem(sys.modules, "piper", raising=False)
+    # Works on hosts where real piper-tts IS installed too: a module without
+    # the PiperVoice symbol makes "from piper import PiperVoice" raise.
+    broken = types.ModuleType("piper")
+    monkeypatch.setitem(sys.modules, "piper", broken)
     tts = PiperTts(TtsConfig())
     with pytest.raises(PiperUnavailable, match="piper package unavailable"):
         tts._synthesize_blocking("Сбой импорта")
