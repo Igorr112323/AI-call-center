@@ -276,7 +276,9 @@ def test_native_renderer_binds_com_and_renders_in_process(monkeypatch):
     assert voice.AudioOutputStream is stream  # property putref binds output
     assert len(voice.setvoice_calls) == 1  # Russian token via SetVoice method
     assert voice.Voice is None              # no ambiguous property put
-    assert voice.calls == [("Здравствуйте", sapi_com.SVSF_PURGE_BEFORE_SPEAK)]
+    # synchronous default flag: purge-before-speak produces empty WAVs
+    assert voice.calls == [("Здравствуйте", sapi_com.SVSF_DEFAULT)]
+    assert sapi_com.SVSF_DEFAULT == 0
     # explicit compatible audio format is pinned before the file opens
     assert state["formats"][0].Type == sapi_com.SAFT_22KHZ_16BIT_MONO
     assert isinstance(stream.Format, _FakeAudioFormat)

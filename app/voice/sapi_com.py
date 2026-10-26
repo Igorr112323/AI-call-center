@@ -20,8 +20,10 @@ import wave
 
 log = logging.getLogger(__name__)
 
-# ISpVoice::Speak flag: purge pending speech before speaking this phrase
-SVSF_PURGE_BEFORE_SPEAK = 1
+# ISpVoice::Speak synchronous default flag. SVSFPurgeBeforeSpeak (1) must be
+# avoided: with an empty queue and a file/memory stream it purges the utterance
+# itself, leaving a header-only WAV (verified empirically on SAPI 5.4).
+SVSF_DEFAULT = 0
 # SAPI voice-token attribute for ru-RU (LCID 0x0419)
 RUSSIAN_VOICE_ATTRIBUTE = "Language=419"
 # SpeechStreamFileMode::SSFMCreateForWrite
@@ -137,7 +139,7 @@ class NativeSapiRenderer:
                 # method — automation clients bind output through this
                 # property; the explicit format above makes it non-negotiable
                 self._local.voice.AudioOutputStream = stream
-                self._local.voice.Speak(text, SVSF_PURGE_BEFORE_SPEAK)
+                self._local.voice.Speak(text, SVSF_DEFAULT)
                 stream.Close()
                 with open(wav_path, "rb") as fh:
                     wav = fh.read()

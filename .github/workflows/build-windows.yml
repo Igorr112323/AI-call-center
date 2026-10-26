@@ -53,74 +53,28 @@ jobs:
         shell: powershell
         run: |
           $py = @'
-          import os
           import sys
-          import tempfile
           import traceback
           try:
               sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+              sys.stderr.reconfigure(encoding="utf-8", errors="replace")
               import comtypes
               import comtypes.client as cc
               print("comtypes", getattr(comtypes, "__version__", "?"), flush=True)
-              ru = "\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u0433\u043e\u043b\u043e\u0441\u043e\u0432\u043e\u0433\u043e \u0434\u0432\u0438\u0436\u043a\u0430"
-              en = "Hello world, this is a voice engine test"
-
-              def voice():
-                  return cc.CreateObject("SAPI.SpVoice", dynamic=True)
-
-              def file_case(text, with_format, flags=1):
-                  fd, path = tempfile.mkstemp(suffix=".wav")
-                  os.close(fd)
-                  v = voice()
-                  st = cc.CreateObject("SAPI.SpFileStream", dynamic=True)
-                  if with_format:
-                      fmt = cc.CreateObject("SAPI.SpAudioFormat", dynamic=True)
-                      fmt.Type = 22
-                      st.Format = fmt
-                  st.Open(path, 3)
-                  v.AudioOutputStream = st
-                  bound = v.AudioOutputStream
-                  ret = v.Speak(text, flags)
-                  st.Close()
-                  size = os.path.getsize(path)
-                  os.unlink(path)
-                  return f"size={size} speak_ret={ret} bound={bound is not None}"
-
-              def mem_case(text, with_format):
-                  v = voice()
-                  st = cc.CreateObject("SAPI.SpMemoryStream", dynamic=True)
-                  if with_format:
-                      fmt = cc.CreateObject("SAPI.SpAudioFormat", dynamic=True)
-                      fmt.Type = 22
-                      st.Format = fmt
-                  v.AudioOutputStream = st
-                  ret = v.Speak(text, 1)
-                  st.Seek(0, 0)
-                  data = st.GetData()
-                  n = len(data) if isinstance(data, (bytes, tuple, list)) else -1
-                  return f"bytes={n} speak_ret={ret}"
-
-              results = []
-              cases = [
-                  ("A file ru fmt", file_case, ru, True, 1),
-                  ("B file ru nofmt", file_case, ru, False, 1),
-                  ("C file en fmt", file_case, en, True, 1),
-                  ("D file en flags0", file_case, en, True, 0),
-                  ("E mem ru fmt", mem_case, ru, True),
-                  ("F mem en nofmt", mem_case, en, False),
-              ]
-              for case in cases:
-                  name, fn = case[0], case[1]
-                  try:
-                      line = f"{name} {fn(*case[2:])}"
-                  except Exception as exc:
-                      line = f"{name} ERROR {exc!r}"
-                  print("RESULT", line, flush=True)
-                  results.append(line)
-              print("::warning title=SAPI matrix::" + " || ".join(results)[:1400], flush=True)
+              probe = cc.CreateObject("SAPI.SpVoice", dynamic=True)
+              voices = probe.GetVoices("")
+              print("installed voices:", voices.Count, flush=True)
+              from app.voice.sapi_com import NativeSapiRenderer, decode_wav
+              r = NativeSapiRenderer(rate=1)
+              phrase = "\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u0433\u043e\u043b\u043e\u0441\u043e\u0432\u043e\u0433\u043e \u0434\u0432\u0438\u0436\u043a\u0430"
+              wav = r.render_wav(phrase)
+              pcm, rate, ch = decode_wav(wav)
+              print(f"Native SAPI WAV: {len(wav)} bytes, {rate} Hz, {len(pcm)} PCM bytes", flush=True)
+              assert rate > 0 and len(pcm) > 1000
+              print("Native SAPI smoke OK", flush=True)
           except Exception:
               msg = " | ".join(traceback.format_exc().splitlines())[:1450]
-              print(f"::error title=SAPI diagnostics failed::{msg}", flush=True)
+              print(f"::error title=SAPI native smoke failed::{msg}", flush=True)
               raise
           '@
           Set-Content -Path "$env:TEMP\sapi_native_smoke.py" -Value $py -Encoding utf8
@@ -188,8 +142,11 @@ jobs:
         shell: bash
         run: |
           TAG="${GITHUB_REF_NAME}"
-          gh release create "$TAG" dist/VoiceSalesAgent.exe \
-            --title "Voice Sales Agent $TAG" \
-            --notes "Сборка Windows (.exe, onefile). Запустите VoiceSalesAgent.exe — установка не требуется. Демо без микрофона: кнопка «Текстовый тест», демо-каталоги во вкладке «Источник данных»."
+          NOTES="Сборка Windows (.exe, onefile). Запустите VoiceSalesAgent.exe — установка не требуется. Демо без микрофона: кнопка «Текстовый тест», демо-каталоги во вкладке «Источник данных»."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/VoiceSalesAgent.exe --clobber
+          else
+            gh release create "$TAG" dist/VoiceSalesAgent.exe --title "Voice Sales Agent $TAG" --notes "$NOTES"
+          fi
         env:
           GH_TOKEN: ${{ github.token }}
