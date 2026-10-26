@@ -6,9 +6,12 @@ import logging
 from typing import Awaitable, Callable
 
 from ..core.models import OrderItem
-from ..integrations.one_c_client import OneCClient, OneCError
+from ..integrations.catalog_provider import CatalogError
+from ..integrations.one_c_client import OneCError
 
 log = logging.getLogger(__name__)
+
+CATALOG_ERRORS = (OneCError, CatalogError)
 
 ToolCallback = Callable[[str], Awaitable[None]]
 
@@ -69,11 +72,16 @@ TOOL_SCHEMAS = [COLLECT_SLOTS_SCHEMA, CHECK_CATALOG_SCHEMA, CREATE_ORDER_SCHEMA]
 
 
 class ToolExecutor:
-    """Stateful executor: keeps slots and the last quoted product for the session."""
+    """Stateful executor: keeps slots and the last quoted product for the session.
 
-    def __init__(self, one_c: OneCClient, phone: str,
+    ``catalog`` is any BaseCatalogProvider — local SQLite price list or live 1C.
+    """
+
+    def __init__(self, catalog, phone: str,
                  on_tool_start: ToolCallback | None = None):
-        self.one_c = one_c
+        self.catalog = catalog
+        # backwards-compatible alias for callers/tests written against 1C
+        self.one_c = catalog
         self.phone = phone
         self.on_tool_start = on_tool_start
         self.slots: dict = {}
@@ -99,10 +107,10 @@ class ToolExecutor:
                     self.slots.setdefault(key, arguments[key])
             query = arguments.get("category") or self.slots.get("category") or ""
             try:
-                product = await self.one_c.get_product_price_and_stock(query, arguments)
-            except OneCError as exc:
+                product = await self.catalog.get_product_price_and_stock(query, arguments)
+            except CATALOG_ERRORS as exc:
                 return json.dumps(
-                    {"ok": False, "error": "1С недоступна, извинись и предложи перезвонить",
+                    {"ok": False, "error": "Каталог недоступен, извинись и предложи перезвонить",
                      "detail": str(exc)}, ensure_ascii=False)
             self.last_product = product
             return json.dumps({
@@ -126,12 +134,12 @@ class ToolExecutor:
                 price=self.last_product.price,
             )
             try:
-                result = await self.one_c.create_lead_or_order(
+                result = await self.catalog.create_lead_or_order(
                     self.phone, [item],
                     comment=arguments.get("comment", ""),
                     address=arguments.get("delivery_address", ""),
                 )
-            except OneCError as exc:
+            except CATALOG_ERRORS as exc:
                 return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
             self.order_result = result
             result["items"] = [{"article": item.article, "name": item.name,

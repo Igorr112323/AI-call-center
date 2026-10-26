@@ -16,7 +16,11 @@ from ..brain.dialog_manager import DialogManager, DialogState
 from ..brain.llm import LlmClient
 from ..brain.tools import ToolExecutor
 from ..config import AppSettings
+from ..integrations.catalog_provider import build_catalog_provider
 from ..integrations.one_c_client import OneCClient
+from ..notifications.dispatcher import NotificationDispatcher
+from ..reporting.quote_generator import generate_quote_pdf
+from ..telephony.local_audio import build_local_agent
 from ..telephony.sip_agent import SipEvent, build_sip_agent
 from ..voice.stt import build_stt
 from ..voice.tts import build_tts
@@ -36,8 +40,13 @@ class CallEngine:
         self.records_dir.mkdir(parents=True, exist_ok=True)
 
         self.one_c = OneCClient(settings.one_c)
+        self.catalog = build_catalog_provider(settings, storage, self.one_c)
+        self.dispatcher = NotificationDispatcher(settings.notifications)
         self.llm = LlmClient(settings.llm)
         self.sip = build_sip_agent(settings.sip, self._on_sip_event, self._on_sip_frame)
+        self.local_agent = build_local_agent(level_callback=self._on_mic_level)
+        self.quotes_dir = self.data_dir / "quotes"
+        self.quotes_dir.mkdir(parents=True, exist_ok=True)
         self._stop = asyncio.Event()
         self._listeners: list = []
         self._voice: VoiceEngine | None = None
@@ -45,8 +54,13 @@ class CallEngine:
         self._call_id: int | None = None
         self._phone = ""
         self._call_started_at = 0.0
+        self._call_mode = "demo"
         self._demo_transport: VirtualTransport | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+
+    @property
+    def local_audio_available(self) -> bool:
+        return getattr(self.local_agent, "available", False)
 
     # ------------------------------------------------------------------ events
     def add_listener(self, callback) -> None:
@@ -73,7 +87,11 @@ class CallEngine:
         if self._voice:
             await self._voice.stop()
         await asyncio.get_running_loop().run_in_executor(None, self.sip.stop)
+        if getattr(self.local_agent, "available", False):
+            self.local_agent.stop()
         await self.one_c.aclose()
+        await self.catalog.aclose()
+        await self.dispatcher.aclose()
         await self.llm.aclose()
         self.storage.close()
 
@@ -92,24 +110,32 @@ class CallEngine:
             self._voice.ingest_frame(pcm, sample_rate)
 
     # ------------------------------------------------------------- call lifecycle
-    async def start_call(self, phone: str, mock_phrases: list[str] | None = None) -> int:
+    async def start_call(self, phone: str, mock_phrases: list[str] | None = None,
+                         mode: str = "auto") -> int:
         if self._voice is not None:
             log.warning("call already active, rejecting start_call")
             return self._call_id or -1
 
+        if mode == "auto":
+            if self.settings.sip.enabled:
+                mode = "sip"
+            elif self.local_audio_available:
+                mode = "local"
+            else:
+                mode = "demo"
+        self._call_mode = mode
         self._phone = phone
         self._call_started_at = time.monotonic()
         record_path = self.records_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}.wav"
         self._call_id = self.storage.create_call(phone, str(record_path))
-        self.emit({"type": "call_started", "call_id": self._call_id, "phone": phone})
+        self.emit({"type": "call_started", "call_id": self._call_id,
+                   "phone": phone, "mode": mode})
 
         stt = build_stt(self.settings.stt, mock_phrases)
         tts = build_tts(self.settings.tts)
-        transport = self.sip.transport if self.settings.sip.enabled else VirtualTransport()
-        if isinstance(transport, VirtualTransport):
-            self._demo_transport = transport
+        transport = self._select_transport(mode)
 
-        executor = ToolExecutor(self.one_c, phone, on_tool_start=self._on_tool_start)
+        executor = ToolExecutor(self.catalog, phone, on_tool_start=self._on_tool_start)
         self._dialog = DialogManager(self.llm, self.settings.scenario, executor)
 
         self._voice = VoiceEngine(
@@ -118,21 +144,41 @@ class CallEngine:
             record_path=record_path,
         )
         await self._voice.start()
+        if mode == "local":
+            self.local_agent.start(self._on_local_frame)
         greeting = self._dialog.open_greeting()
         self._persist_line(Speaker.AGENT, greeting, 0.0)
         await self._voice.speak(greeting)
         return self._call_id
 
+    def _select_transport(self, mode: str):
+        if mode == "sip":
+            return self.sip.transport
+        if mode == "local":
+            return self.local_agent
+        self._demo_transport = VirtualTransport()
+        return self._demo_transport
+
+    def _on_local_frame(self, pcm: bytes, sample_rate: int) -> None:
+        if self._voice:
+            self._voice.ingest_frame(pcm, sample_rate)
+
+    def _on_mic_level(self, db: float) -> None:
+        self.emit({"type": "mic_level", "db": db})
+
     async def end_call(self) -> None:
         if not self._voice:
             return
+        if self._call_mode == "local":
+            self.local_agent.stop()
         duration = int(time.monotonic() - self._call_started_at)
         record_path = await self._voice.stop()
         self._voice = None
 
+        # derive status while the dialog state is still observable
+        status = self._derive_status(duration)
         if self._dialog:
             self._dialog.close()
-        status = self._derive_status(duration)
         self.storage.update_call(
             self._call_id, duration_sec=duration, status=status,
             record_path=str(record_path) if record_path else None,
@@ -144,7 +190,12 @@ class CallEngine:
         self._call_id = None
 
     def _derive_status(self, duration: int) -> CallStatus:
-        if self._dialog and self._dialog.state is DialogState.ORDER_CREATED:
+        order_created = bool(
+            self._dialog and self._dialog.state is DialogState.ORDER_CREATED
+        )
+        if not order_created and self._call_id is not None:
+            order_created = self.storage.get_order_by_call(self._call_id) is not None
+        if order_created:
             return CallStatus.ORDER
         if duration < 5:
             return CallStatus.FAILED
@@ -206,7 +257,7 @@ class CallEngine:
         if order is None:
             raise ValueError(f"order {order_id} not found")
         call = self.storage.get_call(order.call_id) if order.call_id else None
-        result = await self.one_c.create_lead_or_order(
+        result = await self.catalog.create_lead_or_order(
             call.phone if call else "unknown", order.items,
             comment=order.comment, address=order.delivery_address,
         )
@@ -215,18 +266,26 @@ class CallEngine:
         self.emit({"type": "order_posted", "order_id": order_id, "number_1c": number})
         return result
 
-    async def resend_offer(self, order_id: int) -> None:
-        """Hand-off to the company's WhatsApp/SMS gateway.
-
-        Gateway adapters (WhatsApp Business API / SMS provider) subscribe to
-        the ``offer_resent`` event; no third-party SDK is hard-wired here.
-        """
+    async def resend_offer(self, order_id: int) -> dict:
+        """Generate the PDF quote and push it through configured channels."""
         order = self.storage.get_order(order_id)
         if order is None:
             raise ValueError(f"order {order_id} not found")
-        log.info("offer re-send requested for order %s", order_id)
+        call = self.storage.get_call(order.call_id) if order.call_id else None
+        pdf_path = generate_quote_pdf(
+            order, self.settings.catalog,
+            phone=call.phone if call else "",
+            out_dir=self.quotes_dir,
+        )
+        receipts = await self.dispatcher.send_quote(
+            order, pdf_path, phone=call.phone if call else "",
+        )
+        log.info("offer re-send for order %s -> %s (pdf: %s)",
+                 order_id, receipts or "local only", pdf_path)
         self.emit({"type": "offer_resent", "order_id": order_id,
-                   "total": order.total})
+                   "total": order.total, "pdf": str(pdf_path),
+                   "channels": [r["channel"] for r in receipts]})
+        return {"pdf": str(pdf_path), "receipts": receipts}
 
     # ------------------------------------------------------------------ demo API
     async def simulate_utterance(self, text: str) -> str:

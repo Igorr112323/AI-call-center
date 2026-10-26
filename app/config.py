@@ -141,9 +141,32 @@ class ScenarioConfig:
 
 
 @dataclass
+class CatalogConfig:
+    # local (standalone Excel/CSV) | one_c_http | one_c_odata
+    mode: str = "local"
+    last_import_path: str = ""
+    fuzzy_min_score: int = 40          # 0..100, порог уверенности совпадения
+    quote_company_name: str = "ООО «Промпривод»"
+    quote_inn: str = ""
+    quote_vat_rate: float = 20.0       # НДС, %; 0 — без НДС
+
+
+@dataclass
+class NotificationConfig:
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    whatsapp_endpoint: str = ""        # Green-API / произвольный вебхук
+    whatsapp_token: str = ""
+    generic_webhook_url: str = ""
+    enabled: bool = False
+
+
+@dataclass
 class AppSettings:
     sip: SipConfig = field(default_factory=SipConfig)
     one_c: OneCConfig = field(default_factory=OneCConfig)
+    catalog: CatalogConfig = field(default_factory=CatalogConfig)
+    notifications: NotificationConfig = field(default_factory=NotificationConfig)
     stt: SttConfig = field(default_factory=SttConfig)
     tts: TtsConfig = field(default_factory=TtsConfig)
     llm: LlmConfig = field(default_factory=LlmConfig)
@@ -224,3 +247,7 @@ def _apply_env_overrides(s: AppSettings) -> None:
         s.one_c.password = v
     if v := env.get("AI_SIP_PASSWORD"):
         s.sip.password = v
+    if v := env.get("AI_TELEGRAM_BOT_TOKEN"):
+        s.notifications.telegram_bot_token = v
+    if v := env.get("AI_TELEGRAM_CHAT_ID"):
+        s.notifications.telegram_chat_id = v

@@ -42,9 +42,34 @@ with tempfile.TemporaryDirectory() as tmp:
 
     # settings tabs round-trip through widgets and back
     win.scenario_tab._save()
-    win.one_c_tab._save()
+    win.catalog_tab._save()
     win.telephony_tab._save()
     app.processEvents()
+
+    # standalone catalog: CSV import + fuzzy matching + segmented switch
+    import csv as _csv
+    price_csv = Path(tmp) / "price.csv"
+    with price_csv.open("w", encoding="utf-8-sig", newline="") as fh:
+        writer = _csv.writer(fh, delimiter=";")
+        writer.writerow(["Артикул", "Наименование", "Категория", "Стоимость", "Кол-во"])
+        writer.writerow(["TST-1", "Тестовый актуатор 24В 300мм", "актуатор", "5000,00", "9"])
+    win.catalog_tab._import_file(str(price_csv))
+    assert win.catalog_tab.provider.count() >= 1
+    win.catalog_tab.fuzzy_box.edit.setText("актуатор 24в 300мм")
+    app.processEvents()
+    assert win.catalog_tab.fuzzy_result.text and "TST-1" in win.catalog_tab.fuzzy_result.text()
+    win.catalog_tab.btn_one_c.click()
+    app.processEvents()
+    assert win.catalog_tab.stack.currentIndex() == 1
+    win.catalog_tab.btn_local.click()
+    assert win.catalog_tab.stack.currentIndex() == 0
+
+    # call control bar exists and reflects engine availability
+    assert win.call_bar.active is False
+    win.call_bar.set_audio_available(False)
+    assert win.call_bar.toggle_btn.isEnabled() is False
+    win.call_bar.set_audio_available(True)
+    assert win.call_bar.toggle_btn.isEnabled() is True
 
     # icon factory covers every named icon used in the shell
     from app.ui import icons

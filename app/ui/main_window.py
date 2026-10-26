@@ -15,8 +15,9 @@ from ..config import AppSettings
 from ..core.storage import Storage
 from ..theme import PALETTE
 from . import icons
+from .call_bar import CallControlBar
 from .calls_tab import CallsTab
-from .one_c_tab import OneCTab
+from .catalog_tab import CatalogTab
 from .scenario_tab import ScenarioTab
 from .telephony_tab import TelephonyTab
 from .widgets import ScrollArea, StatusDot
@@ -46,7 +47,17 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         root.addWidget(self._build_sidebar())
-        root.addWidget(self._build_pages(), 1)
+
+        workspace = QWidget()
+        workspace_box = QVBoxLayout(workspace)
+        workspace_box.setContentsMargins(0, 0, 0, 0)
+        workspace_box.setSpacing(0)
+        self.call_bar = CallControlBar()
+        self.call_bar.start_local_requested.connect(self._start_local_call)
+        self.call_bar.stop_requested.connect(self._stop_local_call)
+        workspace_box.addWidget(self.call_bar)
+        workspace_box.addWidget(self._build_pages(), 1)
+        root.addWidget(workspace, 1)
         self.setCentralWidget(central)
 
         self.statusBar().showMessage("Готов к работе")
@@ -85,7 +96,7 @@ class MainWindow(QMainWindow):
         nav_specs = [
             ("phone", "Реестр звонков"),
             ("messages", "Сценарий и промпт"),
-            ("database", "Подключение к 1С"),
+            ("database", "Источник данных"),
             ("tower", "Телефония и голос"),
         ]
         for idx, (icon_name, label) in enumerate(nav_specs):
@@ -121,19 +132,19 @@ class MainWindow(QMainWindow):
         runner = self._runner
         self.calls_tab = CallsTab(self.storage)
         self.scenario_tab = ScenarioTab(self.settings)
-        self.one_c_tab = OneCTab(self.settings, runner=runner)
+        self.catalog_tab = CatalogTab(self.settings, self.storage, runner=runner)
         self.telephony_tab = TelephonyTab(self.settings)
 
         self.stack.addWidget(self.calls_tab)
         self.stack.addWidget(ScrollArea(self.scenario_tab))
-        self.stack.addWidget(ScrollArea(self.one_c_tab))
+        self.stack.addWidget(ScrollArea(self.catalog_tab))
         self.stack.addWidget(ScrollArea(self.telephony_tab))
 
         self.calls_tab.post_to_1c.connect(self._post_order)
         self.calls_tab.resend_offer.connect(self._resend_offer)
         self.calls_tab.simulate_requested.connect(self._run_demo_call)
         self.scenario_tab.saved.connect(lambda: self.statusBar().showMessage("Сценарий сохранён", 4000))
-        self.one_c_tab.saved.connect(lambda: self.statusBar().showMessage("Настройки 1С сохранены", 4000))
+        self.catalog_tab.saved.connect(lambda: self.statusBar().showMessage("Источник данных сохранён", 4000))
         self.telephony_tab.saved.connect(lambda: self.statusBar().showMessage("Настройки телефонии сохранены", 4000))
         return self.stack
 
@@ -152,13 +163,38 @@ class MainWindow(QMainWindow):
         kind = event.get("type")
         if kind in ("call_started", "call_ended", "order_saved", "order_posted", "offer_resent"):
             self.calls_tab.refresh()
+        if kind == "call_started":
+            self.call_bar.call_started(event.get("mode", "demo"))
+        elif kind == "call_ended":
+            self.call_bar.call_ended()
+        elif kind == "mic_level":
+            self.call_bar.update_level(float(event.get("db", -50)))
         if kind == "engine_ready":
             registered = event.get("sip_registered", False)
             self._set_sip_state(registered)
+            engine = self._engine()
+            if engine is not None:
+                self.call_bar.set_audio_available(engine.local_audio_available)
         elif kind == "sip":
             self._set_sip_state(event.get("kind") == "registered", event.get("detail", ""))
-        elif kind == "voice" and event.get("type") == "voice" and event.get("ms"):
+        elif kind == "voice" and event.get("ms"):
             self.statusBar().showMessage(f"Задержка ответа: {event['ms']} мс", 5000)
+
+    def _start_local_call(self) -> None:
+        engine = self._engine()
+        if not engine or not engine.local_audio_available:
+            self.statusBar().showMessage("Микрофон недоступен в этой среде", 4000)
+            return
+        future = self.engine_thread.submit(engine.start_call("+7 (микрофон)", mode="local"))
+        future.add_done_callback(
+            lambda f: self._future_status(f, "Тестовый звонок запущен"))
+
+    def _stop_local_call(self) -> None:
+        engine = self._engine()
+        if engine:
+            future = self.engine_thread.submit(engine.end_call())
+            future.add_done_callback(
+                lambda f: self._future_status(f, "Звонок завершён и записан в реестр"))
 
     def _set_sip_state(self, registered: bool, detail: str = "") -> None:
         self.sip_dot.set_status("order" if registered else "failed")

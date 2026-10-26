@@ -8,25 +8,47 @@
 ## Архитектура
 
 ```
-SIP-транк (Zadarma / MTT / MegaFon / Mango)
-        │  RTP 8/16 kHz PCM
-        ▼
-telephony/sip_agent.py ── PJSIP (pjsua2), headless RTP-порты, без звуковой карты
-        │
-        ▼
-voice/voice_engine.py ── кольцевой буфер → VAD → STT → диалог → TTS, barge-in
-        │                   silero-vad       Yandex v3 / faster-whisper / F5-TTS
-        ▼
+SIP-транк (Zadarma / MTT / MegaFon / Mango)      Локальный микрофон (softphone)
+        │  RTP 8/16 kHz PCM                              │  sounddevice 16 kHz
+        ▼                                                ▼
+telephony/sip_agent.py (PJSIP/pjsua2)          telephony/local_audio.py (LocalAudioAgent)
+        └───────────────┬────────────────────────────────┘  barge-in через общий VAD
+                        ▼
+voice/voice_engine.py ── кольцевой буфер → VAD → STT → диалог → TTS
+        │                   silero-vad       Yandex v3 / faster-whisper / F5-TTS / mock
+                        ▼
 brain/dialog_manager.py ── state machine + slot filling + function calling
-        │                   LLM: Groq Llama-3.3-70B / любой OpenAI-совместимый
-        ▼
-integrations/one_c_client.py ── HTTP-сервис 1С / стандартный OData
-        │
-        ▼
-core/storage.py ── SQLite (WAL): calls, clients, orders, transcripts
-records/*.wav   ── микшированные записи разговоров
-ui/ (PySide6)   ── реестр звонков, сценарий, 1С, телефония и голос
+        │                   LLM Groq Llama-3.3-70B · офлайн-мозг без API-ключа
+                        ▼
+integrations/catalog_provider.py ── BaseCatalogProvider:
+        ├─ LocalCatalogProvider  (SQLite local_catalog, Excel/CSV, fuzzy < 5 мс)
+        └─ OneCCatalogProvider   (one_c_client.py: HTTP-сервис 1С / OData)
+                        ▼
+reporting/quote_generator.py ── PDF «КП / счёт» (reportlab, НДС)
+notifications/dispatcher.py  ── Telegram Bot API / вебхук / WhatsApp Green-API
+                        ▼
+core/storage.py ── SQLite (WAL): calls, clients, orders, transcripts, local_catalog
+records/*.wav   ── микшированные записи разговоров; quotes/*.pdf ── сгенерированные КП
+ui/ (PySide6)   ── реестр, источник данных/каталог, сценарий, телефония и голос
 ```
+
+### Автономный режим (без 1С и без облачных API)
+
+Приложение по умолчанию работает полностью офлайн:
+
+1. **Каталог**: импорт `.xlsx/.xls/.csv` drag-and-drop'ом или кнопкой; заголовки
+   распознаются по синонимам («Цена/Стоимость/Прайс», «Остаток/Кол-во»…), лишние
+   колонки превращаются в параметры товара. Fuzzy-поиск `lookup_product()`
+   понимает речь вроде «актуатор на 24 вольта 300 мм» и отвечает менее чем за 5 мс.
+2. **Мозг**: при пустом API-ключе LLM включается детерминированный офлайн-диалог
+   (slot-filling, возражения, заказ) — демо на ноутбуке не требует интернета.
+3. **Softphone**: кнопка «Начать тестовый звонок с микрофона» в верхней панели
+   запускает реальный разговор через микрофон/наушники с VU-метром, таймером и
+   barge-in; звонок попадает в общий реестр. Без PortAudio кнопка безопасно
+   блокируется, остальной функционал доступен.
+4. **Документы**: по заказу генерируется PDF КП с НДС и отправляется в Telegram,
+   универсальный вебхук или WhatsApp (Green-API); без настроек каналов PDF просто
+   сохраняется в `quotes/`.
 
 ## Open-source доноры и библиотеки
 
@@ -39,6 +61,9 @@ ui/ (PySide6)   ── реестр звонков, сценарий, 1С, те�
 | TTS локально | F5-TTS (zero-shot клон голоса) | github.com/SWivid/F5-TTS |
 | LLM | Groq Llama-3.3-70B через OpenAI-совместимый API | api.groq.com |
 | GUI | PySide6 (Qt 6) | qt.io |
+| Softphone | sounddevice (PortAudio) | python-sounddevice.org |
+| Прайс-листы | openpyxl (.xlsx), встроенный csv | openpyxl.readthedocs.io |
+| PDF КП/счета | reportlab | reportlab.com |
 | Упаковка | PyInstaller onefile | pyinstaller.org |
 
 Тяжелые ML-зависимости подключаются опционально: без ключей и моделей приложение
@@ -67,12 +92,19 @@ app/
     dialog_manager.py    КА-автомат состояний, слоты, возражения, fallback
     prompts.py           системный промпт продавца
   integrations/
+    catalog_provider.py  BaseCatalogProvider: локальный SQLite + fuzzy / адаптер 1С
+    price_parser.py      парсер .xlsx/.xls/.csv, синонимы заголовков, русские числа
     one_c_client.py      httpx, 1.5 с таймаут, ретраи, circuit breaker, OData
   telephony/
     sip_agent.py         pjsua2: регистрация, автоответ, двунаправленный media port
+    local_audio.py       LocalAudioAgent: микрофон/наушники, VU-метр, без SIP
+  reporting/
+    quote_generator.py   PDF «КП / счёт» с НДС (reportlab)
+  notifications/
+    dispatcher.py        Telegram / вебхук / WhatsApp Green-API
   ui/                    PySide6: 4 вкладки, master-detail, QSS Industrial Dark Slate
   resources/style.qss    единая дизайн-система (палитра, состояния, 4px скроллбары)
-tests/                   35 pytest-кейсов + offscreen UI smoke + рендер скриншотов
+tests/                   61 pytest-кейс + offscreen UI smoke + рендер скриншотов
 VoiceSalesAgent.spec     PyInstaller onefile
 ```
 
@@ -101,14 +133,16 @@ powershell -File scripts/build_exe.ps1
 Данные приложения: `%APPDATA%\AISalesAgent\` — `settings.json`, `agent.db`,
 `records/`, `logs/`. Удаление exe не затрагивает накопленную историю.
 
-## Интеграция с 1С
+## Источники данных и интеграция с 1С
 
-Два равноправных режима (переключатель во вкладке «Подключение к 1С»):
+Три равноправных режима (вкладка «Источник данных и каталог»):
 
-1. **HTTP-сервис** — рекомендуемый: кастомный сервис `/hs/ai_sales/` отдаёт JSON
-   с динамической ценой и остатками по складам. Контракт и пример BSL-кода:
-   [`docs/1c_http_service_contract.md`](docs/1c_http_service_contract.md).
-2. **OData** — стандартный интерфейс `/odata/standard.odata/` без доработки
+1. **Автономный прайс-лист (по умолчанию)** — Excel/CSV в локальной SQLite,
+   нечеткий поиск без сети, заказы получают номера `ЛОКАЛ-...`, КП выгружается PDF.
+2. **HTTP-сервис 1С** — рекомендуемый при интеграции: кастомный сервис
+   `/hs/ai_sales/` отдаёт JSON с динамической ценой и остатками по складам.
+   Контракт и пример BSL-кода: [`docs/1c_http_service_contract.md`](docs/1c_http_service_contract.md).
+3. **OData 1С** — стандартный интерфейс `/odata/standard.odata/` без доработки
    конфигурации; имена реквизитов маппятся в интерфейсе.
 
 Авторизация — Basic Auth технического пользователя. Сетевые сбои не роняют

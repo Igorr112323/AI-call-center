@@ -8,9 +8,13 @@ from dataclasses import dataclass, field
 
 from ..config import ScenarioConfig
 from ..core.models import Order, OrderItem
+from ..integrations.catalog_provider import extract_params
 from .llm import LlmClient, LlmError, TurnCancelled
 from .prompts import GREETING, build_system_prompt
 from .tools import TOOL_SCHEMAS, ToolExecutor
+
+_CONFIRM_WORDS = ("да", "оформл", "заказыва", "записыва", "беру", "согласен", "подтвержда")
+_CATEGORY_WORDS = ("актуатор", "привод", "сервопривод", "выключатель", "двигатель", "клапан")
 
 log = logging.getLogger(__name__)
 
@@ -87,6 +91,11 @@ class DialogManager:
 
     async def handle_utterance(self, text: str,
                                cancel: asyncio.Event | None = None) -> TurnResult:
+        # Fully offline path: a real LlmClient without an API key falls back to
+        # the deterministic selling brain; test doubles keep their scripted path.
+        if isinstance(self.llm, LlmClient) and not self.llm.cfg.api_key:
+            return await self._offline_turn(text)
+
         cancel = cancel or asyncio.Event()
         self.messages.append({"role": "user", "content": text})
         tool_names: list[str] = []
@@ -125,6 +134,84 @@ class DialogManager:
         if self.executor.order_result and self.order is None:
             self.order = self._build_order(self.executor.order_result)
         return TurnResult(reply, self.state, tool_names, dict(self.slots),
+                          self.missing_required_slots(), self.order)
+
+    # ------------------------------------------------------------- offline brain
+    async def _offline_turn(self, text: str) -> TurnResult:
+        """Deterministic slot-filling sales flow without any external LLM API."""
+        self.messages.append({"role": "user", "content": text})
+        tool_names: list[str] = []
+        lowered = text.lower()
+
+        for rule in self.scenario.objections:
+            if rule["trigger"].lower() in lowered:
+                self._advance_state(text, [])
+                self.messages.append({"role": "assistant", "content": rule["response"]})
+                return self._result(rule["response"], tool_names)
+
+        params = extract_params(text)
+        category = next((w for w in _CATEGORY_WORDS if w in lowered), None)
+        if category:
+            params["category"] = category
+        if params:
+            await self.executor.execute("collect_slots", params)
+            tool_names.append("collect_slots")
+
+        if self.executor.last_product and any(w in lowered for w in _CONFIRM_WORDS):
+            result = await self.executor.execute("create_order", {})
+            tool_names.append("create_order")
+            reply = self._offline_order_reply(result)
+        elif self._ready_for_quote(params):
+            result = await self.executor.execute("check_catalog_and_price", {
+                "category": self.executor.slots.get("category", ""),
+                "voltage": self.executor.slots.get("voltage"),
+                "stroke_mm": self.executor.slots.get("stroke_mm"),
+                "force_n": self.executor.slots.get("force_n"),
+            })
+            tool_names.append("check_catalog_and_price")
+            reply = self._offline_quote_reply()
+        else:
+            reply = self._next_slot_question()
+
+        self._advance_state(text, tool_names)
+        if self.executor.order_result and self.order is None:
+            self.order = self._build_order(self.executor.order_result)
+        self.messages.append({"role": "assistant", "content": reply})
+        return self._result(reply, tool_names)
+
+    def _ready_for_quote(self, params: dict) -> bool:
+        slots = self.executor.slots
+        return bool(slots.get("voltage") and slots.get("stroke_mm")) \
+            and self.executor.last_product is None
+
+    def _next_slot_question(self) -> str:
+        for slot in self.scenario.slots:
+            if slot.required and not self.executor.slots.get(slot.name):
+                return slot.question
+        return "Продиктуйте, пожалуйста, параметры оборудования."
+
+    def _offline_quote_reply(self) -> str:
+        product = self.executor.last_product
+        if not product or not product.found:
+            return ("К сожалению, по таким параметрам позиция не найдена в прайсе. "
+                    "Можем подобрать аналог — продиктуйте другие характеристики.")
+        qty = self.executor.slots.get("quantity") or 1
+        return (
+            f"Подобрали: {product.name}, артикул {product.article}. "
+            f"Цена {_format_money(product.price)} рублей, в наличии {int(product.stock)} штук. "
+            f"За {qty} шт. получится {_format_money(product.price * qty)} рублей. Оформляем заказ?"
+        )
+
+    def _offline_order_reply(self, result_json: str) -> str:
+        import json
+        result = json.loads(result_json)
+        if not result.get("ok"):
+            return "Не получилось зафиксировать заказ, повторите, пожалуйста, ещё раз."
+        number = result.get("number_1c") or result.get("number") or "—"
+        return f"Готово, заказ {number} зафиксирован. Менеджер свяжется с вами для подтверждения."
+
+    def _result(self, reply: str, tool_names: list[str]):
+        return TurnResult(reply, self.state, tool_names, dict(self.executor.slots),
                           self.missing_required_slots(), self.order)
 
     # ------------------------------------------------------------------ internals
@@ -187,3 +274,7 @@ class DialogManager:
 
     def close(self) -> None:
         self._transition(DialogState.CLOSED)
+
+
+def _format_money(value: float) -> str:
+    return f"{value:,.0f}".replace(",", " ")

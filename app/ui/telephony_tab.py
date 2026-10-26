@@ -139,6 +139,27 @@ class TelephonyTab(QWidget):
         api_card.layout().addLayout(api_form)
         root.addWidget(api_card)
 
+        notif_card = Card()
+        notif_card.add(SectionLabel("Отправка КП и вебхуки"))
+        notif_form = QFormLayout()
+        notif_form.setSpacing(10)
+        self.tg_token = QLineEdit()
+        self.tg_token.setEchoMode(QLineEdit.EchoMode.Password)
+        self.tg_chat = QLineEdit()
+        self.webhook_url = QLineEdit()
+        self.webhook_url.setPlaceholderText("https://example.com/hooks/quote")
+        self.wa_endpoint = QLineEdit()
+        self.wa_endpoint.setPlaceholderText("Green-API sendFile URL")
+        self.wa_token = QLineEdit()
+        self.wa_token.setEchoMode(QLineEdit.EchoMode.Password)
+        notif_form.addRow("Telegram Bot Token", self.tg_token)
+        notif_form.addRow("Telegram Chat ID", self.tg_chat)
+        notif_form.addRow("Универсальный вебхук", self.webhook_url)
+        notif_form.addRow("WhatsApp Green-API URL", self.wa_endpoint)
+        notif_form.addRow("WhatsApp токен", self.wa_token)
+        notif_card.layout().addLayout(notif_form)
+        root.addWidget(notif_card)
+
         hint = QLabel("Изменения SIP применяются после перезапуска службы.")
         hint.setProperty("role", "muted")
         root.addWidget(hint)
@@ -179,6 +200,13 @@ class TelephonyTab(QWidget):
         self.groq_key.setText(s.llm.api_key)
         self.llm_model.setText(s.llm.model)
 
+        n = s.notifications
+        self.tg_token.setText(n.telegram_bot_token)
+        self.tg_chat.setText(n.telegram_chat_id)
+        self.webhook_url.setText(n.generic_webhook_url)
+        self.wa_endpoint.setText(n.whatsapp_endpoint)
+        self.wa_token.setText(n.whatsapp_token)
+
     def _save(self) -> None:
         s = self.settings
         s.sip.enabled = self.sip_enabled.isChecked()
@@ -207,5 +235,14 @@ class TelephonyTab(QWidget):
 
         s.llm.api_key = self.groq_key.text()
         s.llm.model = self.llm_model.text().strip() or s.llm.model
+
+        n = s.notifications
+        n.telegram_bot_token = self.tg_token.text().strip()
+        n.telegram_chat_id = self.tg_chat.text().strip()
+        n.generic_webhook_url = self.webhook_url.text().strip()
+        n.whatsapp_endpoint = self.wa_endpoint.text().strip()
+        n.whatsapp_token = self.wa_token.text().strip()
+        n.enabled = bool(n.telegram_bot_token or n.generic_webhook_url or n.whatsapp_endpoint)
+
         s.save()
         self.saved.emit()

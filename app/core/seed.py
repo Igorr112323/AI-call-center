@@ -1,13 +1,47 @@
 """First-run demo dataset so the registry reads like a real production tool."""
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 
 from .models import CallStatus, Order, OrderItem, Speaker, TranscriptLine
 from .storage import Storage
 
+_DEMO_CATALOG = [
+    {"sku": "ACT-24-300", "name": "Актуатор линейный 24В, ход 300мм",
+     "category": "актуатор", "price": 11500.0, "stock": 14,
+     "params": {"voltage": 24, "stroke_mm": 300, "force_n": 500}},
+    {"sku": "ACT-12-150", "name": "Актуатор линейный 12В, ход 150мм",
+     "category": "актуатор", "price": 4200.0, "stock": 60,
+     "params": {"voltage": 12, "stroke_mm": 150, "force_n": 300}},
+    {"sku": "ACT-220-400", "name": "Актуатор линейный 220В, ход 400мм",
+     "category": "актуатор", "price": 18900.0, "stock": 7,
+     "params": {"voltage": 220, "stroke_mm": 400, "force_n": 1200}},
+    {"sku": "SRV-750-B", "name": "Сервопривод 750Вт с электромагнитным тормозом",
+     "category": "сервопривод", "price": 48000.0, "stock": 2,
+     "params": {"power_w": 750}},
+    {"sku": "LSE-IP67", "name": "Концевой выключатель IP67 для конвейера",
+     "category": "выключатель", "price": 1450.0, "stock": 120,
+     "params": {"protection": "IP67"}},
+    {"sku": "MTR-15-1500", "name": "Двигатель асинхронный 15кВт, 1500 об/мин",
+     "category": "двигатель", "price": 92400.0, "stock": 3,
+     "params": {"power_kw": 15, "rpm": 1500}},
+]
+
+
+def seed_local_catalog(storage: Storage) -> int:
+    if storage.count_catalog() > 0:
+        return 0
+    rows = [
+        {**{k: v for k, v in item.items() if k != "params"},
+         "params_json": json.dumps(item["params"], ensure_ascii=False)}
+        for item in _DEMO_CATALOG
+    ]
+    return storage.replace_catalog(rows)
+
 
 def seed_if_empty(storage: Storage) -> bool:
+    seed_local_catalog(storage)
     if storage.stats().get("total", 0) > 0:
         return False
 

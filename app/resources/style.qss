@@ -105,6 +105,32 @@ QFrame#Sidebar {
     border-right: 1px solid #222730;
 }
 
+QFrame#CallBar {
+    background-color: #121418;
+    border-bottom: 1px solid #222730;
+}
+
+QPushButton#CallToggle {
+    background-color: #172622;
+    border: 1px solid #14503D;
+    color: #10B981;
+    border-radius: 4px;
+    min-height: 30px;
+    padding: 0 14px;
+    font-weight: 600;
+}
+
+QPushButton#CallToggle:hover {
+    background-color: #1C322B;
+    border-color: #10B981;
+}
+
+QPushButton#CallToggle:disabled {
+    background-color: #14171D;
+    border-color: #222730;
+    color: #565E6C;
+}
+
 QPushButton#NavButton {
     background: transparent;
     border: none;
@@ -244,6 +270,46 @@ QPushButton#PlayButton:hover {
 QPushButton#PlayButton:disabled {
     background-color: #1C2129;
     border-color: #2C323D;
+}
+
+/* ----------------------------- segmented control ------------------------- */
+QFrame#SegmentedBar {
+    background-color: #121418;
+    border: 1px solid #222730;
+    border-radius: 6px;
+}
+
+QPushButton#Segment {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: #7A8394;
+    min-height: 30px;
+    padding: 0 16px;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+QPushButton#Segment:hover {
+    color: #E6E8EC;
+}
+
+QPushButton#Segment:checked {
+    background-color: #172622;
+    border-color: #14503D;
+    color: #10B981;
+}
+
+/* -------------------------------- drop zone ------------------------------ */
+QFrame#DropZone {
+    background-color: #121418;
+    border: 1px dashed #2C323D;
+    border-radius: 6px;
+}
+
+QFrame#DropZone:hover {
+    border-color: #10B981;
+    background-color: #0F1F19;
 }
 
 /* ------------------------------ filter chips ----------------------------- */

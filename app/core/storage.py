@@ -61,6 +61,16 @@ CREATE TABLE IF NOT EXISTS order_items (
     price REAL NOT NULL,
     unit TEXT DEFAULT 'шт'
 );
+
+CREATE TABLE IF NOT EXISTS local_catalog (
+    sku TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    category TEXT DEFAULT '',
+    price REAL NOT NULL DEFAULT 0,
+    stock INTEGER NOT NULL DEFAULT 0,
+    params_json TEXT DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_catalog_category ON local_catalog(category);
 """
 
 
@@ -155,6 +165,9 @@ class Storage:
                 )
             return order.id
 
+    def get_order_by_call(self, call_id: int) -> Order | None:
+        return self._load_order(call_id)
+
     def get_order(self, order_id: int) -> Order | None:
         with self._lock:
             row = self._conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
@@ -233,6 +246,56 @@ class Storage:
             items=[OrderItem(i["article"], i["name"], i["quantity"], i["price"], i["unit"])
                    for i in items_rows],
         )
+
+    # ------------------------------------------------------------ local catalog
+    def replace_catalog(self, rows: list[dict]) -> int:
+        """Atomic full-reload of the standalone price list."""
+        with self._lock:
+            self._conn.execute("BEGIN")
+            try:
+                self._conn.execute("DELETE FROM local_catalog")
+                self._conn.executemany(
+                    "INSERT INTO local_catalog(sku, name, category, price, stock, params_json) "
+                    "VALUES (:sku, :name, :category, :price, :stock, :params_json)",
+                    rows,
+                )
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+            return len(rows)
+
+    def upsert_catalog_row(self, row: dict) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO local_catalog(sku, name, category, price, stock, params_json) "
+                "VALUES (:sku, :name, :category, :price, :stock, :params_json) "
+                "ON CONFLICT(sku) DO UPDATE SET name=excluded.name, category=excluded.category, "
+                "price=excluded.price, stock=excluded.stock, params_json=excluded.params_json",
+                row,
+            )
+
+    def count_catalog(self) -> int:
+        with self._lock:
+            return int(self._conn.execute("SELECT COUNT(*) FROM local_catalog").fetchone()[0])
+
+    def list_catalog(self, limit: int = 50, search: str = "") -> list[sqlite3.Row]:
+        sql = "SELECT * FROM local_catalog"
+        params: list = []
+        if search:
+            sql += " WHERE name LIKE ? OR sku LIKE ? OR category LIKE ?"
+            like = f"%{search}%"
+            params = [like, like, like]
+        sql += " ORDER BY category, name LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            return self._conn.execute(sql, params).fetchall()
+
+    def all_catalog(self) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT sku, name, category, price, stock, params_json FROM local_catalog"
+            ).fetchall()
 
     def stats(self) -> dict[str, int]:
         with self._lock:

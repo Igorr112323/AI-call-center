@@ -27,16 +27,33 @@ with tempfile.TemporaryDirectory() as tmp:
     win.show()
     app.processEvents()
 
-    names = ["01_registry", "02_scenario", "03_onec", "04_telephony"]
-    for i, name in enumerate(names):
-        win._switch_page(i)
+    def settle():
+        QTimer.singleShot(40, lambda: None)
         app.processEvents()
-        QTimer.singleShot(50, lambda: None)
-        app.processEvents()
-        win.grab().save(str(out / f"{name}.png"))
 
-    # inspector with an order selected
     win._switch_page(0)
-    app.processEvents()
-    win.grab().save(str(out / "05_registry_order.png"))
+    settle()
+    win.grab().save(str(out / "01_registry.png"))
+
+    win._switch_page(1)
+    settle()
+    win.grab().save(str(out / "02_scenario.png"))
+
+    win._switch_page(2)
+    settle()
+    win.catalog_tab.fuzzy_box.edit.setText("актуатор 24В 300мм")
+    settle()
+    win.grab().save(str(out / "03_catalog_local.png"))
+
+    win.catalog_tab.btn_one_c.click()
+    settle()
+    win.grab().save(str(out / "04_catalog_1c.png"))
+
+    win._switch_page(3)
+    settle()
+    win.grab().save(str(out / "05_telephony.png"))
+
+    win._switch_page(0)
+    settle()
+    win.grab().save(str(out / "06_registry_order.png"))
     print("rendered", sorted(p.name for p in out.glob("*.png")))
