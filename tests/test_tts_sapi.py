@@ -302,6 +302,42 @@ def test_native_renderer_com_failure_raises(monkeypatch):
         NativeSapiRenderer().render_wav("Сбой")
 
 
+class _RawComPointer:
+    def __init__(self):
+        self.invoked = []
+
+    def GetIDsOfNames(self, name):
+        return [{"SetOutput": 21, "SetVoice": 19}[name]]
+
+    def _invoke(self, dispid, invkind, named, *args):
+        self.invoked.append((dispid, invkind, args))
+
+
+class _TypeCompDispatch:
+    """Mimics comtypes lazybind: ITypeComp cannot bind a real SAPI method."""
+
+    def __init__(self):
+        self._comobj = _RawComPointer()
+        self.AudioOutputStream = None
+        self.Voice = None
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        raise NameError(f"Name {name} not found")
+
+
+def test_call_falls_back_to_dispid_invoke():
+    from app.voice.sapi_com import DISPATCH_METHOD, _call
+
+    assert DISPATCH_METHOD == 1  # wtypes.h stable value
+    obj = _TypeCompDispatch()
+    _call(obj, "SetOutput", "stream-x", True)
+    assert obj._comobj.invoked == [(21, DISPATCH_METHOD, ("stream-x", True))]
+    _call(obj, "SetVoice", "token-y")
+    assert obj._comobj.invoked[-1] == (19, DISPATCH_METHOD, ("token-y",))
+
+
 def test_native_renderer_empty_wav_raises_and_cleans_temp(monkeypatch):
     state = _install_fake_comtypes(monkeypatch, payload=b"")
     with pytest.raises(NativeSapiError):

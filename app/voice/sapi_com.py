@@ -26,10 +26,35 @@ SVSF_PURGE_BEFORE_SPEAK = 1
 RUSSIAN_VOICE_ATTRIBUTE = "Language=419"
 # SpeechStreamFileMode::SSFMCreateForWrite
 SSFM_CREATE_FOR_WRITE = 3
+# IDispatch invocation kind (stable wtypes.h constants, avoids importing
+# comtypes.automation on platforms where comtypes cannot load)
+DISPATCH_METHOD = 1
 
 
 class NativeSapiError(RuntimeError):
     """Raised when the in-process SAPI COM stack cannot be used."""
+
+
+def _com_invoke(dispatch, name: str, *args):
+    """Call an IDispatch method via GetIDsOfNames, bypassing ITypeComp.
+
+    comtypes' lazybind resolves names through ITypeComp::Bind, which fails
+    on some SAPI methods (e.g. SetOutput) even though plain IDispatch name
+    lookup resolves them. Test doubles expose methods directly and never
+    reach this path.
+    """
+    raw = dispatch._comobj
+    dispid = raw.GetIDsOfNames(name)[0]
+    return raw._invoke(dispid, DISPATCH_METHOD, 0, *args)
+
+
+def _call(dispatch, name: str, *args):
+    """Prefer direct attribute access; fall back to dispid-level Invoke."""
+    try:
+        attr = getattr(dispatch, name)
+    except (AttributeError, NameError):
+        return _com_invoke(dispatch, name, *args)
+    return attr(*args)
 
 
 class NativeSapiRenderer:
@@ -77,7 +102,7 @@ class NativeSapiRenderer:
                 return
             token = tokens.Item(0)
             try:
-                voice.SetVoice(token)
+                _call(voice, "SetVoice", token)
             except Exception:  # noqa: BLE001
                 voice.Voice = token
             log.info("SAPI selected Russian voice")
@@ -101,7 +126,12 @@ class NativeSapiRenderer:
                 # SetOutput is the documented high-level binding (the same
                 # call .NET's SetOutputToWaveFile makes); AllowFormatChanges
                 # lets SAPI negotiate the voice's preferred stream format.
-                self._local.voice.SetOutput(stream, True)
+                try:
+                    _call(self._local.voice, "SetOutput", stream, True)
+                except Exception:  # noqa: BLE001 - property put as last resort
+                    log.warning("SetOutput failed, trying AudioOutputStream put",
+                                exc_info=True)
+                    self._local.voice.AudioOutputStream = stream
                 self._local.voice.Speak(text, SVSF_PURGE_BEFORE_SPEAK)
                 stream.Close()
                 with open(wav_path, "rb") as fh:
