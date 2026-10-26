@@ -36,14 +36,11 @@ hiddenimports = collect_submodules("app")
 hiddenimports += ["PySide6.QtSvg", "PySide6.QtMultimedia", "PySide6.QtMultimediaWidgets"]
 # standalone-mode runtimes
 hiddenimports += collect_submodules("openpyxl")
-hiddenimports += [
-    "sounddevice",
-    "numpy",
-    "reportlab",
-    "reportlab.pdfbase",
-    "reportlab.pdfbase.ttfonts",
-    "reportlab.platypus",
-]
+# whole-package collection: reportlab.colors pulls the rl_accel C extension
+# and platypus resolves several submodules lazily at document build time
+hiddenimports += collect_submodules("reportlab")
+binaries += collect_dynamic_libs("reportlab")
+hiddenimports += ["sounddevice", "numpy"]
 
 a = Analysis(
     ["run.py"],

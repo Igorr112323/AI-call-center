@@ -37,7 +37,7 @@ jobs:
           python -m pytest tests --ignore=tests/ui_smoke.py -q --junitxml=pytest.xml 2>&1 | tee pytest.log
           status=${PIPESTATUS[0]}
           if [ "$status" != "0" ]; then
-            python -c "from pathlib import Path; [print('::error::'+l[:900]) for l in Path('pytest.log').read_text(encoding='utf-8', errors='replace').splitlines() if l.startswith(('FAILED','ERROR','E  ','E ')) or 'Error' in l]"
+            python -c "from pathlib import Path; lines=[l for l in Path('pytest.log').read_text(encoding='utf-8', errors='replace').splitlines() if l.startswith(('FAILED','ERROR','E  ','E ')) or 'Error' in l]; print('::error::' + ' | '.join(lines)[:1500])"
           fi
           exit $status
 
@@ -62,7 +62,11 @@ jobs:
           Get-Content selfcheck.out, selfcheck.err -ErrorAction SilentlyContinue
           if ($proc.ExitCode -ne 0) {
             $log = Join-Path $env:TEMP "voice_sales_selfcheck.log"
-            if (Test-Path $log) { Get-Content $log | ForEach-Object { Write-Host "::error::$_" } }
+            if (Test-Path $log) {
+              $joined = ((Get-Content $log) -join " | ")
+              if ($joined.Length -gt 1500) { $joined = $joined.Substring(0, 1500) }
+              Write-Host "::error::$joined"
+            }
             throw "Packaged exe selfcheck failed"
           }
 
