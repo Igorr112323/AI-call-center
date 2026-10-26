@@ -55,8 +55,13 @@ class CallEngine:
         self._phone = ""
         self._call_started_at = 0.0
         self._call_mode = "demo"
+        self._text_session = False
         self._demo_transport: VirtualTransport | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+
+    @property
+    def session_active(self) -> bool:
+        return self._call_id is not None
 
     @property
     def local_audio_available(self) -> bool:
@@ -112,7 +117,7 @@ class CallEngine:
     # ------------------------------------------------------------- call lifecycle
     async def start_call(self, phone: str, mock_phrases: list[str] | None = None,
                          mode: str = "auto") -> int:
-        if self._voice is not None:
+        if self.session_active:
             log.warning("call already active, rejecting start_call")
             return self._call_id or -1
 
@@ -210,6 +215,113 @@ class CallEngine:
             return f"{product.name} ({qty or 1} шт)".strip()
         category = self._dialog.slots.get("category")
         return f"Запрос: {category}" if category else ""
+
+    # ------------------------------------------------- text simulator sessions
+    async def start_text_call(self, phone: str) -> dict:
+        """Open a keyboard-driven session: real DialogManager, no audio pipeline."""
+        if self.session_active:
+            raise RuntimeError("a call session is already active")
+        self._text_session = True
+        self._call_mode = "text"
+        self._phone = phone
+        self._call_started_at = time.monotonic()
+        self._call_id = self.storage.create_call(phone, record_path=None, source="text")
+        executor = ToolExecutor(self.catalog, phone, on_tool_start=self._on_tool_start)
+        self._dialog = DialogManager(self.llm, self.settings.scenario, executor)
+        greeting = self._dialog.open_greeting()
+        self._persist_line(Speaker.AGENT, greeting, 0.0)
+        self.emit({"type": "call_started", "call_id": self._call_id,
+                   "phone": phone, "mode": "text"})
+        self.emit({"type": "transcript", "speaker": Speaker.AGENT.value,
+                   "text": greeting, "at": 0.0})
+        return {
+            "call_id": self._call_id,
+            "greeting": greeting,
+            "state": self._dialog.state.value,
+            "slots": dict(self._dialog.slots),
+        }
+
+    async def send_text_utterance(self, text: str) -> dict:
+        """Run one full brain turn and return everything the UI inspector needs."""
+        if not self._text_session or self._dialog is None:
+            raise RuntimeError("no active text session")
+        elapsed = time.monotonic() - self._call_started_at
+        self._persist_line(Speaker.CLIENT, text, elapsed)
+        self.emit({"type": "transcript", "speaker": Speaker.CLIENT.value,
+                   "text": text, "at": elapsed})
+
+        t0 = time.monotonic()
+        result = await self._dialog.handle_utterance(text)
+        rtt_ms = max(1, int((time.monotonic() - t0) * 1000))
+
+        self._persist_line(Speaker.AGENT, result.reply_text, elapsed)
+        self.emit({"type": "transcript", "speaker": Speaker.AGENT.value,
+                   "text": result.reply_text, "at": elapsed, "latency_ms": rtt_ms})
+
+        order_saved = None
+        if result.order and result.order.items:
+            result.order.call_id = self._call_id
+            order_id = self.storage.save_order(result.order)
+            self.storage.update_call(self._call_id, status=CallStatus.ORDER)
+            order_saved = {"order_id": order_id, "total": result.order.total,
+                           "number_1c": result.order.number_1c}
+            self.emit({"type": "order_saved", "call_id": self._call_id,
+                       "order_id": order_id, "total": result.order.total,
+                       "number_1c": result.order.number_1c})
+
+        product = self._dialog.executor.last_product
+        return {
+            "reply": result.reply_text,
+            "state": result.state.value,
+            "slots": dict(result.slots),
+            "missing": result.missing_required,
+            "tool_names": list(result.tool_names),
+            "rtt_ms": rtt_ms,
+            "product": {
+                "found": product.found, "article": product.article,
+                "name": product.name, "price": product.price, "stock": product.stock,
+            } if product else None,
+            "order": order_saved,
+            "at": elapsed,
+        }
+
+    async def end_text_call(self) -> dict:
+        """Close the keyboard session, finalize the row and (if any) render its PDF."""
+        if not self._text_session or self._call_id is None:
+            raise RuntimeError("no active text session")
+        duration = max(1, int(time.monotonic() - self._call_started_at))
+        status = self._derive_status(duration)
+        if self._dialog:
+            self._dialog.close()
+        summary = self._build_summary()
+        self.storage.update_call(self._call_id, duration_sec=duration,
+                                 status=status, summary=summary)
+
+        pdf_path: str | None = None
+        order = self.storage.get_order_by_call(self._call_id)
+        if order is not None:
+            pdf_path = str(generate_quote_pdf(
+                order, self.settings.catalog, phone=self._phone,
+                out_dir=self.quotes_dir))
+        call_id = self._call_id
+        self.emit({"type": "call_ended", "call_id": call_id,
+                   "status": status.value, "duration": duration, "pdf": pdf_path})
+        self._dialog = None
+        self._call_id = None
+        self._text_session = False
+        return {"call_id": call_id, "status": status.value, "duration": duration,
+                "summary": summary, "order": order, "pdf": pdf_path}
+
+    async def quote_pdf_path(self, order_id: int) -> str:
+        """(Re)generate a quote PDF on demand for the 'open quote' action."""
+        order = self.storage.get_order(order_id)
+        if order is None:
+            raise ValueError(f"order {order_id} not found")
+        call = self.storage.get_call(order.call_id) if order.call_id else None
+        path = generate_quote_pdf(
+            order, self.settings.catalog,
+            phone=call.phone if call else "", out_dir=self.quotes_dir)
+        return str(path)
 
     # ------------------------------------------------------- per-turn processing
     async def _on_user_text(self, text: str) -> str:

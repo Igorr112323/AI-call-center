@@ -41,3 +41,35 @@ def test_client_upsert_dedupes_phone(tmp_path):
     first = db.upsert_client("+700000003", name="")
     second = db.upsert_client("+700000003", name="ООО Завод")
     assert first == second
+
+
+def test_migration_adds_source_to_legacy_calls_table(tmp_path):
+    import sqlite3
+    db_file = tmp_path / "legacy.db"
+    raw = sqlite3.connect(str(db_file))
+    raw.executescript(
+        """
+        CREATE TABLE calls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id INTEGER,
+            phone TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            duration_sec INTEGER DEFAULT 0,
+            status TEXT NOT NULL,
+            summary TEXT DEFAULT '',
+            record_path TEXT
+        );
+        INSERT INTO calls(phone, started_at, status)
+        VALUES ('+79990001122', '2026-10-01T10:00:00', 'consultation');
+        """
+    )
+    raw.commit()
+    raw.close()
+
+    db = Storage(db_file)  # runs additive _migrate() on open
+    call_id = db.create_call("+79990003344", source="text")
+    legacy = db.get_call(1)
+    new = db.get_call(call_id)
+    assert legacy.source == "sip"      # column default for pre-existing rows
+    assert new.source == "text"
+    db.close()

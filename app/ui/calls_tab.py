@@ -26,6 +26,7 @@ class CallsTab(QWidget):
     selection_changed = Signal(object)        # CallRecord | None
     post_to_1c = Signal(int)
     resend_offer = Signal(int)
+    open_quote = Signal(int)
     simulate_requested = Signal()
 
     def __init__(self, storage: Storage, parent=None):
@@ -48,6 +49,7 @@ class CallsTab(QWidget):
 
         self.inspector.post_to_1c.connect(self.post_to_1c)
         self.inspector.resend_offer.connect(self.resend_offer)
+        self.inspector.open_quote.connect(self.open_quote)
         self.refresh()
 
     # ------------------------------------------------------------------ master

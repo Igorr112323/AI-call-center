@@ -74,6 +74,7 @@ class CallRecord:
     summary: str = ""
     record_path: str | None = None
     client_id: int | None = None
+    source: str = "sip"          # sip | local | text | demo
     transcript: list[TranscriptLine] = field(default_factory=list)
     order: Order | None = None
 

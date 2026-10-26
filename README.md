@@ -46,7 +46,14 @@ ui/ (PySide6)   ── реестр, источник данных/катало�
    запускает реальный разговор через микрофон/наушники с VU-метром, таймером и
    barge-in; звонок попадает в общий реестр. Без PortAudio кнопка безопасно
    блокируется, остальной функционал доступен.
-4. **Документы**: по заказу генерируется PDF КП с НДС и отправляется в Telegram,
+4. **Текстовый симулятор**: кнопка «Текстовый тест» открывает окно
+   «Инспектор диалога / Текстовый симулятор» (750×550) — ввод фраз с клавиатуры
+   идёт через тот же `DialogManager`, что и реальный звонок (STT не участвует),
+   ответы при наличии аудио озвучивает TTS, иначе тихий режим. Справа — состояние
+   КА-автомата, распознанные слоты, бейджи вызовов каталога и RTT в мс. После
+   «Положить трубку» звонок сохраняется в SQLite с пометкой «Текстовый тест»,
+   заказ получает PDF КП, а кнопка «Открыть КП» в инспекторе активна сразу.
+5. **Документы**: по заказу генерируется PDF КП с НДС и отправляется в Telegram,
    универсальный вебхук или WhatsApp (Green-API); без настроек каналов PDF просто
    сохраняется в `quotes/`.
 
@@ -98,13 +105,15 @@ app/
   telephony/
     sip_agent.py         pjsua2: регистрация, автоответ, двунаправленный media port
     local_audio.py       LocalAudioAgent: микрофон/наушники, VU-метр, без SIP
+    text_simulator.py    TextSimulatorAgent: клавиатура вместо микрофона, mute-safe TTS
   reporting/
     quote_generator.py   PDF «КП / счёт» с НДС (reportlab)
   notifications/
     dispatcher.py        Telegram / вебхук / WhatsApp Green-API
   ui/                    PySide6: 4 вкладки, master-detail, QSS Industrial Dark Slate
+    text_call_window.py  окно текстового симулятора: транскрипт, инспектор слотов, RTT
   resources/style.qss    единая дизайн-система (палитра, состояния, 4px скроллбары)
-tests/                   61 pytest-кейс + offscreen UI smoke + рендер скриншотов
+tests/                   67 pytest-кейсов + offscreen UI smoke + рендер скриншотов
 VoiceSalesAgent.spec     PyInstaller onefile
 ```
 
@@ -116,7 +125,7 @@ python -m venv .venv
 pip install -r requirements.txt
 
 python run.py                     # GUI
-python -m pytest tests            # 35 тестов, GUI не требуется
+python -m pytest tests            # 67 тестов, GUI не требуется
 ```
 
 Headless-проверка интерфейса (Linux/CI): см. `tests/stubs/generate_stubs.py` —

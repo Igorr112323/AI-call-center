@@ -47,7 +47,10 @@ _TRANSITIONS: dict[DialogState, set[DialogState]] = {
     DialogState.CONFIRMING: {
         DialogState.ORDER_CREATED, DialogState.HANDLING_OBJECTION, DialogState.CLOSED,
     },
-    DialogState.ORDER_CREATED: {DialogState.CLOSED},
+    DialogState.ORDER_CREATED: {
+        DialogState.CLOSED, DialogState.COLLECTING, DialogState.QUOTING,
+        DialogState.HANDLING_OBJECTION, DialogState.CONFIRMING,
+    },
     DialogState.CLOSED: set(),
 }
 
@@ -63,6 +66,43 @@ class TurnResult:
     missing_required: list[str] = field(default_factory=list)
     order: Order | None = None
     cancelled: bool = False
+    silence_timeout: bool = False
+
+
+# Second-line answers when the same objection comes up again — the offline
+# brain must never parrot the identical phrase like a broken record.
+_OBJECTION_FOLLOWUPS: dict[str, str] = {
+    "дорого": (
+        "Понимаю обеспокоенность. Это заводская цена с гарантией и наличием на "
+        "складе: дешёвые аналоги часто выходят дороже из-за простоя и замены."
+    ),
+    "скидку": (
+        "Давайте зафиксирую запрос: при заказе от десяти единиц согласуем "
+        "индивидуальную скидку и сроки поставки прямо сейчас."
+    ),
+    "нет в наличии": (
+        "Смотрю ближайшее поступление и аналоги — подберём позицию без потери "
+        "по характеристикам, чтобы не останавливать вашу линию."
+    ),
+    "подумаю": (
+        "Конечно. Зафиксирую цену и наличие до конца дня — если передумаете, "
+        "позвоните, параметры уже будут у меня под рукой."
+    ),
+    "робот": (
+        "Я голосовой ассистент, но работаю по реальному прайсу и складу; если "
+        "нужен живой менеджер — оставьте вопрос, и он перезвонит в течение часа."
+    ),
+    "человек": (
+        "Записываю запрос на живого менеджера. Подскажите удобное время звонка "
+        "и суть вопроса, чтобы он подготовил цену и наличие заранее."
+    ),
+}
+
+SILENCE_PROMPTS = (
+    "Алло, вас не слышно, вы на связи?",
+    "Переспросите, пожалуйста, я фиксирую параметры оборудования.",
+    "Связь прервалась — перезвоним, как только она восстановится. До свидания.",
+)
 
 
 class DialogManager:
@@ -77,6 +117,8 @@ class DialogManager:
         self.messages: list[dict] = [{"role": "system", "content": build_system_prompt(scenario)}]
         self._required = [s.name for s in scenario.slots if s.required]
         self.order: Order | None = None
+        self.silence_count = 0
+        self._objection_hits: dict[str, int] = {}
 
     def open_greeting(self) -> str:
         self._transition(DialogState.COLLECTING)
@@ -91,6 +133,7 @@ class DialogManager:
 
     async def handle_utterance(self, text: str,
                                cancel: asyncio.Event | None = None) -> TurnResult:
+        self.silence_count = 0  # any real phrase resets the silence watchdog
         # Fully offline path: a real LlmClient without an API key falls back to
         # the deterministic selling brain; test doubles keep their scripted path.
         if isinstance(self.llm, LlmClient) and not self.llm.cfg.api_key:
@@ -136,6 +179,24 @@ class DialogManager:
         return TurnResult(reply, self.state, tool_names, dict(self.slots),
                           self.missing_required_slots(), self.order)
 
+    async def handle_silence(self) -> TurnResult:
+        """Watchdog turn for a non-responding customer.
+
+        First two missed turns ask for confirmation; the third closes the
+        call automatically. Real utterances reset the counter (handle_utterance).
+        """
+        if self.state is DialogState.CLOSED:
+            return self._result("", [])
+        self.silence_count += 1
+        timed_out = self.silence_count >= 3
+        reply = SILENCE_PROMPTS[min(self.silence_count - 1, len(SILENCE_PROMPTS) - 1)]
+        if timed_out:
+            self.close()
+        self.messages.append({"role": "assistant", "content": reply})
+        return TurnResult(reply, self.state, [], dict(self.executor.slots),
+                          self.missing_required_slots(), self.order,
+                          silence_timeout=timed_out)
+
     # ------------------------------------------------------------- offline brain
     async def _offline_turn(self, text: str) -> TurnResult:
         """Deterministic slot-filling sales flow without any external LLM API."""
@@ -144,10 +205,15 @@ class DialogManager:
         lowered = text.lower()
 
         for rule in self.scenario.objections:
-            if rule["trigger"].lower() in lowered:
+            trigger = rule["trigger"].lower()
+            if trigger in lowered:
+                hits = self._objection_hits.get(trigger, 0)
+                self._objection_hits[trigger] = hits + 1
+                reply = rule["response"] if hits == 0 else _OBJECTION_FOLLOWUPS.get(
+                    trigger, rule["response"])
                 self._advance_state(text, [])
-                self.messages.append({"role": "assistant", "content": rule["response"]})
-                return self._result(rule["response"], tool_names)
+                self.messages.append({"role": "assistant", "content": reply})
+                return self._result(reply, tool_names)
 
         params = extract_params(text)
         category = next((w for w in _CATEGORY_WORDS if w in lowered), None)
@@ -157,7 +223,19 @@ class DialogManager:
             await self.executor.execute("collect_slots", params)
             tool_names.append("collect_slots")
 
+        # Slot change invalidated the provisional quote/order — drop the stale
+        # local order object so the flow re-quotes instead of double-booking.
+        if self.executor.last_product is None and self.order is not None:
+            self.order = None
+
         if self.executor.last_product and any(w in lowered for w in _CONFIRM_WORDS):
+            if self.state is DialogState.ORDER_CREATED:
+                reply = (
+                    f"Заказ {self.order.number_1c if self.order else ''} уже "
+                    "зафиксирован. Если нужно изменить параметры — назовите их, пересчитаю."
+                ).replace("  ", " ").strip()
+                self.messages.append({"role": "assistant", "content": reply})
+                return self._result(reply, tool_names)
             result = await self.executor.execute("create_order", {})
             tool_names.append("create_order")
             reply = self._offline_order_reply(result)

@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS calls (
     duration_sec INTEGER DEFAULT 0,
     status TEXT NOT NULL,
     summary TEXT DEFAULT '',
-    record_path TEXT
+    record_path TEXT,
+    source TEXT DEFAULT 'sip'
 );
 CREATE INDEX IF NOT EXISTS idx_calls_started ON calls(started_at DESC);
 
@@ -85,6 +86,15 @@ class Storage:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Additive migrations for databases created by older builds."""
+        columns = {r["name"] for r in self._conn.execute("PRAGMA table_info(calls)")}
+        if "source" not in columns:
+            self._conn.execute(
+                "ALTER TABLE calls ADD COLUMN source TEXT DEFAULT 'sip'"
+            )
 
     def close(self) -> None:
         with self._lock:
@@ -106,14 +116,15 @@ class Storage:
             return int(cur.fetchone()[0])
 
     # -------------------------------------------------------------------- calls
-    def create_call(self, phone: str, record_path: str | None = None) -> int:
+    def create_call(self, phone: str, record_path: str | None = None,
+                    source: str = "sip") -> int:
         with self._lock:
             client_id = self.upsert_client(phone)
             cur = self._conn.execute(
-                "INSERT INTO calls(client_id, phone, started_at, status, record_path) "
-                "VALUES (?,?,?,?,?)",
+                "INSERT INTO calls(client_id, phone, started_at, status, record_path, source) "
+                "VALUES (?,?,?,?,?,?)",
                 (client_id, phone, datetime.utcnow().isoformat(timespec="seconds"),
-                 CallStatus.ONGOING.value, record_path),
+                 CallStatus.ONGOING.value, record_path, source),
             )
             return int(cur.lastrowid)
 
@@ -225,6 +236,7 @@ class Storage:
             summary=row["summary"],
             record_path=row["record_path"],
             client_id=row["client_id"],
+            source=row["source"] if "source" in row.keys() else "sip",
             transcript=[
                 TranscriptLine(Speaker(t["speaker"]), t["text"], t["started_at"], t["confidence"])
                 for t in t_rows

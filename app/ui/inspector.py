@@ -35,12 +35,15 @@ class TranscriptView(QScrollArea):
         self._box.addStretch(1)
         self.setWidget(self._container)
 
-    def bind(self, call: CallRecord) -> None:
+    def clear(self) -> None:
         while self._box.count() > 1:
             item = self._box.takeAt(0)
             w = item.widget()
             if w is not None:
                 w.deleteLater()
+
+    def bind(self, call: CallRecord) -> None:
+        self.clear()
         for line in call.transcript:
             self._box.insertWidget(self._box.count() - 1,
                                    self._row_widget(line.speaker.value, line.text, line.started_at))
@@ -75,6 +78,7 @@ class TranscriptView(QScrollArea):
 class OrderCard(QFrame):
     post_to_1c = Signal(int)
     resend_offer = Signal(int)
+    open_quote = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -126,6 +130,9 @@ class OrderCard(QFrame):
 
         actions = QHBoxLayout()
         actions.setSpacing(8)
+        self.quote_btn = QPushButton("  Открыть КП")
+        self.quote_btn.setIcon(icons.icon("file"))
+        self.quote_btn.clicked.connect(lambda: self._emit(self.open_quote))
         self.resend_btn = QPushButton("  Отправить КП повторно")
         self.resend_btn.setIcon(icons.icon("send"))
         self.resend_btn.clicked.connect(lambda: self._emit(self.resend_offer))
@@ -134,6 +141,7 @@ class OrderCard(QFrame):
         self.post_btn.setIcon(icons.icon("database", PALETTE["canvas"]))
         self.post_btn.clicked.connect(lambda: self._emit(self.post_to_1c))
         actions.addStretch(1)
+        actions.addWidget(self.quote_btn)
         actions.addWidget(self.resend_btn)
         actions.addWidget(self.post_btn)
         body_box.addLayout(actions)
@@ -153,6 +161,7 @@ class OrderCard(QFrame):
             return
         self.setHidden(False)
         self._order_id = order.id
+        self.quote_btn.setEnabled(True)
         self.table.setRowCount(len(order.items))
         for row, item in enumerate(order.items):
             values = [item.article, item.name, _num(item.quantity),
@@ -189,9 +198,13 @@ class OrderCard(QFrame):
         )
 
 
+_SOURCE_LABELS = {"sip": "SIP", "local": "Микрофон", "text": "Текстовый тест", "demo": "Демо"}
+
+
 class CallInspector(QWidget):
     post_to_1c = Signal(int)
     resend_offer = Signal(int)
+    open_quote = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -202,10 +215,13 @@ class CallInspector(QWidget):
         header = QHBoxLayout()
         self.title = QLabel("Выберите звонок")
         self.title.setProperty("role", "screenTitle")
+        self.source_badge = Badge()
+        self.source_badge.setHidden(True)
         self.status_badge = Badge()
         self.status_badge.setHidden(True)
         header.addWidget(self.title)
         header.addStretch(1)
+        header.addWidget(self.source_badge)
         header.addWidget(self.status_badge)
         box.addLayout(header)
 
@@ -225,6 +241,7 @@ class CallInspector(QWidget):
         self.order_card = OrderCard()
         self.order_card.post_to_1c.connect(self.post_to_1c)
         self.order_card.resend_offer.connect(self.resend_offer)
+        self.order_card.open_quote.connect(self.open_quote)
         box.addWidget(self.order_card)
 
     def bind(self, call: CallRecord | None) -> None:
@@ -233,6 +250,7 @@ class CallInspector(QWidget):
             self.title.setText("Выберите звонок")
             self.meta.setText("")
             self.status_badge.setHidden(True)
+            self.source_badge.setHidden(True)
             self.transcript.clear()
             self.order_card.setHidden(True)
             return
@@ -241,6 +259,9 @@ class CallInspector(QWidget):
             f"{call.started_at:%d.%m.%Y %H:%M}  ·  {format_timecode(call.duration_sec)}"
             + (f"  ·  {call.summary}" if call.summary else "")
         )
+        self.source_badge.setText(_SOURCE_LABELS.get(call.source, call.source or "SIP"))
+        self.source_badge.setHidden(False)
+        self.source_badge.set_tone("ok" if call.source == "text" else "")
         self.status_badge.setText(call.status.label_ru)
         self.status_badge.setHidden(False)
         self.status_badge.set_tone(_badge_tone(call.status))

@@ -29,15 +29,51 @@ class CatalogError(Exception):
 
 # --------------------------------------------------------------------- parsing
 _VOLTAGE_RE = re.compile(r"(\d{1,3})\s*(?:вольт\w*|в\.?|v\b)", re.IGNORECASE)
-_STROKE_RE = re.compile(r"(\d{2,4})\s*мм", re.IGNORECASE)
+_STROKE_RE = re.compile(r"(\d{2,4})\s*(?:мм|миллиметр\w*)", re.IGNORECASE)
 _FORCE_RE = re.compile(r"(\d{2,5})\s*(?:ньютон\w*|н\.?|n\b|кг)", re.IGNORECASE)
 _QUANTITY_RE = re.compile(r"(\d{1,4})\s*(?:шт\w*|единиц\w*|штук\w*)", re.IGNORECASE)
+_METERS_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*метр\w*", re.IGNORECASE)
 _RU_NUMERALS = {
     "один": 1, "одну": 1, "одна": 1, "два": 2, "две": 2, "три": 3,
     "четыре": 4, "пять": 5, "шесть": 6, "семь": 7, "восемь": 8,
     "девять": 9, "десять": 10,
 }
 _NUMBER_TOKEN_RE = re.compile(r"\d+")
+
+# Разговорный жаргон напряжения (целые слитные слова, обычные числительные
+# такого рода через пробел разбирает _spoken_to_digits).
+_VOLTAGE_SLANG = {
+    "двадцатьчетверка": 24, "двадцатьчетвёрка": 24,
+    "двенадцатка": 12, "двухсотдвадцатка": 220,
+}
+# Жаргон хода штока; применяется только в контексте слов «шток»/«ход».
+_STROKE_SLANG = {
+    "сотка": 100, "двухсотка": 200, "трехсотка": 300, "трёхсотка": 300,
+    "четырехсотка": 400, "четырёхсотка": 400, "пятисотка": 500,
+    "шестисотка": 600, "тридцатка": 300, "полтораста": 150,
+}
+_STROKE_CONTEXT = ("шток", "ход")
+
+_RU_UNITS = {
+    "ноль": 0, "один": 1, "одна": 1, "одно": 1, "два": 2, "две": 2,
+    "три": 3, "четыре": 4, "пять": 5, "шесть": 6, "семь": 7,
+    "восемь": 8, "девять": 9,
+    "десять": 10, "одиннадцать": 11, "двенадцать": 12, "тринадцать": 13,
+    "четырнадцать": 14, "пятнадцать": 15, "шестнадцать": 16,
+    "семнадцать": 17, "восемнадцать": 18, "девятнадцать": 19,
+}
+_RU_TENS = {
+    "двадцать": 20, "тридцать": 30, "сорок": 40, "пятьдесят": 50,
+    "шестьдесят": 60, "семьдесят": 70, "восемьдесят": 80, "девяносто": 90,
+}
+_RU_HUNDREDS = {
+    "сто": 100, "двести": 200, "триста": 300, "четыреста": 400,
+    "пятьсот": 500, "шестьсот": 600, "семьсот": 700, "восемьсот": 800,
+    "девятьсот": 900,
+}
+_RU_OTHER_WORDS = {
+    "полтора": "1.5", "пару": "2", "пара": "2",
+}
 
 _PARAM_ALIASES = {
     "voltage": ("напряжение", "вольт", "в", "v"),
@@ -46,19 +82,93 @@ _PARAM_ALIASES = {
 }
 
 
+def _spoken_to_digits(text: str) -> str:
+    """Replace Russian spoken numerals ('двадцать четыре') with digits.
+
+    Greedy additive scan over tokens: hundreds + tens + units accumulate,
+    non-numeral words flush the accumulator. Handles hyphenated/joint forms
+    like 'двадцатьчетверка' via the slang tables before tokenization.
+    """
+    out = text.lower()
+    for word, value in _VOLTAGE_SLANG.items():
+        out = out.replace(word, f"{value} вольт")
+    for word, replacement in _RU_OTHER_WORDS.items():
+        out = re.sub(rf"\b{word}\b", replacement, out)
+    for word, value in tuple(_RU_UNITS.items()) + tuple(_RU_TENS.items()):
+        out = re.sub(rf"\b{word}\s+с половиной\b", f"{value}.5", out)
+    out = re.sub(r"(\d+(?:[.,]\d+)?)\s*с половиной", r"\1.5", out)
+
+    tokens = re.split(r"([^а-яё0-9.,]+)", out)
+    result: list[str] = []
+    accum = 0
+    has_accum = False
+    pending_sep = ""
+
+    def flush():
+        nonlocal accum, has_accum, pending_sep
+        if has_accum:
+            result.append(pending_sep + str(accum))
+            accum, has_accum, pending_sep = 0, False, ""
+
+    for token in tokens:
+        word = token.strip()
+        if word in ("тысяча", "тысячи", "тысяч"):
+            accum = max(accum, 1) * 1000
+            has_accum = True
+            pending_sep = ""
+        elif word in _RU_HUNDREDS:
+            accum += _RU_HUNDREDS[word]
+            has_accum = True
+            pending_sep = ""
+        elif word in _RU_TENS:
+            accum += _RU_TENS[word]
+            has_accum = True
+            pending_sep = ""
+        elif word in _RU_UNITS:
+            accum += _RU_UNITS[word]
+            has_accum = True
+            pending_sep = ""
+        elif word == "":
+            # bare whitespace: hold it until we know whether the numeral chain
+            # continues ('двадцать[ ]четыре' must stay one number, 24)
+            if has_accum:
+                pending_sep = token
+            elif result:
+                result.append(token)
+        else:
+            flush()
+            result.append(token)
+    flush()
+    return "".join(result)
+
+
 def extract_params(query: str) -> dict:
-    """Pull engineering parameters out of free-form Russian speech."""
+    """Pull engineering parameters out of free-form Russian speech.
+
+    Tolerates spoken numerals ('двадцать четыре вольта'), slang
+    ('двадцатьчетверка', 'шток тридцатка'), meters ('полтора метра') and
+    money chatter ('скиньте пятьсот рублей' must not pollute engineering slots).
+    """
     params: dict = {}
-    if match := _VOLTAGE_RE.search(query):
+    normalized = _spoken_to_digits(query)
+
+    if match := _VOLTAGE_RE.search(normalized):
         params["voltage"] = int(match.group(1))
-    if match := _STROKE_RE.search(query):
+    if match := _METERS_RE.search(normalized):
+        params["stroke_mm"] = int(round(float(match.group(1).replace(",", ".")) * 1000))
+    elif match := _STROKE_RE.search(normalized):
         params["stroke_mm"] = int(match.group(1))
-    if match := _FORCE_RE.search(query):
+    elif any(ctx in normalized for ctx in _STROKE_CONTEXT):
+        for word, value in _STROKE_SLANG.items():
+            if re.search(rf"\b{word}\b", normalized):
+                params["stroke_mm"] = value
+                break
+    if match := _FORCE_RE.search(normalized):
         params["force_n"] = int(match.group(1))
-    if match := _QUANTITY_RE.search(query):
+    if match := _QUANTITY_RE.search(normalized):
         params["quantity"] = int(match.group(1))
     else:
-        for word in re.split(r"[^\w]+", query.lower()):
+        for word in re.split(r"[^\w]+", normalized):
             if word in _RU_NUMERALS:
                 params["quantity"] = _RU_NUMERALS[word]
                 break

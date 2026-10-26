@@ -96,9 +96,23 @@ class ToolExecutor:
                 log.exception("filler callback failed")
 
         if name == "collect_slots":
+            engineering = ("category", "voltage", "stroke_mm", "force_n")
+            changed = [
+                key for key in engineering
+                if key in arguments and arguments[key] not in (None, "")
+                and self.slots.get(key) not in (None, "")
+                and str(self.slots.get(key)) != str(arguments[key])
+            ]
             for key, value in arguments.items():
                 if value is not None and value != "":
                     self.slots[key] = value
+            if changed:
+                # The customer changed their mind mid-call: the quoted product
+                # and any provisional order are stale until re-quoted.
+                if self.last_product is not None or self.order_result is not None:
+                    log.info("slot change %s invalidates previous quote", changed)
+                self.last_product = None
+                self.order_result = None
             return json.dumps({"ok": True, "slots": self.slots}, ensure_ascii=False)
 
         if name == "check_catalog_and_price":

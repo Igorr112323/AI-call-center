@@ -58,12 +58,14 @@ class VUMeter(QWidget):
 class CallControlBar(QFrame):
     start_local_requested = Signal()
     stop_requested = Signal()
+    text_test_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("CallBar")
         self._elapsed = 0
         self._active = False
+        self._audio_available = True
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(16, 8, 16, 8)
@@ -76,6 +78,14 @@ class CallControlBar(QFrame):
         self.toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.toggle_btn.clicked.connect(self._on_click)
         layout.addWidget(self.toggle_btn)
+
+        self.text_btn = QPushButton("  Текстовый тест")
+        self.text_btn.setObjectName("CallToggle")
+        self.text_btn.setIcon(icons.icon("messages", PALETTE["accent"]))
+        self.text_btn.setIconSize(QSize(15, 15))
+        self.text_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.text_btn.clicked.connect(self.text_test_requested.emit)
+        layout.addWidget(self.text_btn)
 
         self.status_dot = QLabel()
         self.status_dot.setPixmap(_dot(PALETTE["text_faint"]))
@@ -98,10 +108,16 @@ class CallControlBar(QFrame):
         self._timer.timeout.connect(self._tick)
 
     def set_audio_available(self, available: bool) -> None:
+        self._audio_available = available
         self.toggle_btn.setEnabled(available)
         if not available:
-            self.status_label.setText("Микрофон недоступен (нет PortAudio/sounddevice)")
-            self.status_dot.setPixmap(_dot(PALETTE["danger"]))
+            self.status_label.setText("Микрофон недоступен — доступен текстовый тест")
+            self.status_dot.setPixmap(_dot(PALETTE["warning"]))
+
+    def set_busy(self, busy: bool) -> None:
+        """Disable launch buttons while any call session is active."""
+        self.toggle_btn.setEnabled(getattr(self, "_audio_available", True) and not busy)
+        self.text_btn.setEnabled(not busy)
 
     def call_started(self, mode: str) -> None:
         self._active = True

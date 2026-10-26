@@ -55,6 +55,8 @@ class MainWindow(QMainWindow):
         self.call_bar = CallControlBar()
         self.call_bar.start_local_requested.connect(self._start_local_call)
         self.call_bar.stop_requested.connect(self._stop_local_call)
+        self.call_bar.text_test_requested.connect(self._open_text_simulator)
+        self._text_window = None
         workspace_box.addWidget(self.call_bar)
         workspace_box.addWidget(self._build_pages(), 1)
         root.addWidget(workspace, 1)
@@ -142,6 +144,7 @@ class MainWindow(QMainWindow):
 
         self.calls_tab.post_to_1c.connect(self._post_order)
         self.calls_tab.resend_offer.connect(self._resend_offer)
+        self.calls_tab.open_quote.connect(self._open_quote_pdf)
         self.calls_tab.simulate_requested.connect(self._run_demo_call)
         self.scenario_tab.saved.connect(lambda: self.statusBar().showMessage("Сценарий сохранён", 4000))
         self.catalog_tab.saved.connect(lambda: self.statusBar().showMessage("Источник данных сохранён", 4000))
@@ -164,8 +167,12 @@ class MainWindow(QMainWindow):
         if kind in ("call_started", "call_ended", "order_saved", "order_posted", "offer_resent"):
             self.calls_tab.refresh()
         if kind == "call_started":
-            self.call_bar.call_started(event.get("mode", "demo"))
+            if event.get("mode") == "text":
+                self.call_bar.set_busy(True)
+            else:
+                self.call_bar.call_started(event.get("mode", "demo"))
         elif kind == "call_ended":
+            self.call_bar.set_busy(False)
             self.call_bar.call_ended()
         elif kind == "mic_level":
             self.call_bar.update_level(float(event.get("db", -50)))
@@ -214,6 +221,45 @@ class MainWindow(QMainWindow):
             return
         future = self.engine_thread.submit(engine.resend_offer(order_id))
         future.add_done_callback(lambda f: self._future_status(f, "КП отправлено повторно"))
+
+    def _open_quote_pdf(self, order_id: int) -> None:
+        engine = self._engine()
+        if not engine:
+            return
+        future = self.engine_thread.submit(engine.quote_pdf_path(order_id))
+        future.add_done_callback(self._open_pdf_when_ready)
+
+    def _open_pdf_when_ready(self, future) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        try:
+            path = future.result()
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+            self.statusBar().showMessage("Файл КП открыт", 4000)
+        except Exception as exc:  # noqa: BLE001
+            self.statusBar().showMessage(f"Не удалось открыть КП: {exc}", 6000)
+
+    def _open_text_simulator(self) -> None:
+        from .text_call_window import TextCallWindow
+        engine = self._engine()
+        if not engine:
+            self.statusBar().showMessage("Служба ещё не запущена", 4000)
+            return
+        if engine.session_active:
+            self.statusBar().showMessage("Сначала завершите активный звонок", 4000)
+            return
+        self._text_window = TextCallWindow(self.engine_thread, self.settings)
+        self._text_window.closed.connect(self._on_text_call_closed)
+        self._text_window.show()
+
+    def _on_text_call_closed(self, result: dict) -> None:
+        status = result.get("status", "")
+        if result.get("pdf"):
+            msg = "Текстовый диалог завершён — заказ оформлен, КП сформирован"
+        else:
+            msg = f"Текстовый диалог завершён · {status}"
+        self.statusBar().showMessage(msg, 6000)
+        self.calls_tab.refresh()
 
     def _future_status(self, future, ok_text: str) -> None:
         try:

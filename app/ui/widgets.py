@@ -75,6 +75,12 @@ class Card(QFrame):
         else:
             self._layout.addWidget(widget)
 
+    def add_widget(self, widget: QWidget, stretch: int = 0) -> None:
+        self._layout.addWidget(widget, stretch)
+
+    def add_layout(self, layout: QLayout) -> None:
+        self._layout.addLayout(layout)
+
 
 class SectionLabel(QLabel):
     def __init__(self, text: str, parent=None):
