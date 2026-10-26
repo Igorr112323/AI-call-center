@@ -75,11 +75,17 @@ jobs:
           '@
           Set-Content -Path "$env:TEMP\sapi_native_smoke.py" -Value $py -Encoding utf8
           $env:PYTHONPATH = (Get-Location).Path
-          $out = python -u "$env:TEMP\sapi_native_smoke.py" 2>&1 | Out-String
-          if ($LASTEXITCODE -ne 0) {
-            $msg = ($out -replace "`r?`n", " | ")
-            if ($msg.Length -gt 1400) { $msg = $msg.Substring($msg.Length - 1400) }
-            Write-Host "::error title=SAPI native smoke failed::$msg"
+          $ErrorActionPreference = "Continue"
+          $proc = Start-Process -FilePath "python" `
+            -ArgumentList "-u `"$env:TEMP\sapi_native_smoke.py`"" `
+            -Wait -PassThru -NoNewWindow `
+            -RedirectStandardOutput "$env:TEMP\sapi_native.out" `
+            -RedirectStandardError "$env:TEMP\sapi_native.err"
+          $out = ((Get-Content "$env:TEMP\sapi_native.out", "$env:TEMP\sapi_native.err" `
+            -ErrorAction SilentlyContinue) -join " | ")
+          if ($proc.ExitCode -ne 0) {
+            if ($out.Length -gt 1400) { $out = $out.Substring($out.Length - 1400) }
+            Write-Host "::error title=SAPI native smoke failed::$out"
             throw "Native SAPI smoke failed (see annotation)"
           }
           Write-Host $out
