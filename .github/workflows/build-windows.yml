@@ -31,7 +31,15 @@ jobs:
           pip install -r requirements-build.txt
 
       - name: Run backend test suite
-        run: python -m pytest tests --ignore=tests/ui_smoke.py -q
+        shell: bash
+        run: |
+          set +e
+          python -m pytest tests --ignore=tests/ui_smoke.py -q --junitxml=pytest.xml 2>&1 | tee pytest.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" != "0" ]; then
+            python -c "from pathlib import Path; [print('::error::'+l[:900]) for l in Path('pytest.log').read_text(encoding='utf-8', errors='replace').splitlines() if l.startswith(('FAILED','ERROR','E  ','E ')) or 'Error' in l]"
+          fi
+          exit $status
 
       - name: Render raster assets and application icon
         env:
