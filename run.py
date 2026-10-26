@@ -5,6 +5,23 @@ Modes:
     python run.py --selfcheck  headless import/resource check, exit code 0/1
 """
 import sys
+import tempfile
+import traceback
+from pathlib import Path
+
+SELFCHECK_LOG = Path(tempfile.gettempdir()) / "voice_sales_selfcheck.log"
+
+
+def _log(message: str) -> None:
+    """Windowed PyInstaller builds have no stdout; mirror output to a log file."""
+    try:
+        print(message)
+    except Exception:  # noqa: BLE001 - sys.stdout may be None in windowed mode
+        pass
+    try:
+        SELFCHECK_LOG.write_text(message, encoding="utf-8")
+    except OSError:
+        pass
 
 
 def selfcheck() -> int:
@@ -30,11 +47,11 @@ def selfcheck() -> int:
         assert extract_params("24 вольта, ход 300 мм")["voltage"] == 24
         assert amount_in_words(28800.5).startswith("Двадцать восемь тысяч")
         assert CallEngine and EngineThread and DialogManager and TextSimulatorAgent
-        assert AppSettings
-        print("selfcheck OK")
+        assert AppSettings and Storage
+        _log("selfcheck OK")
         return 0
-    except Exception as exc:  # noqa: BLE001 - build gate needs the message
-        print(f"selfcheck FAILED: {exc!r}")
+    except Exception:  # noqa: BLE001 - build gate needs the traceback on disk
+        _log(f"selfcheck FAILED:\n{traceback.format_exc()}")
         return 1
 
 

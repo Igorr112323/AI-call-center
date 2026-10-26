@@ -56,9 +56,15 @@ jobs:
         shell: powershell
         run: |
           $proc = Start-Process -FilePath ".\dist\VoiceSalesAgent.exe" `
-            -ArgumentList "--selfcheck" -Wait -PassThru -NoNewWindow
+            -ArgumentList "--selfcheck" -Wait -PassThru `
+            -RedirectStandardOutput "selfcheck.out" -RedirectStandardError "selfcheck.err"
           Write-Host "exe selfcheck exit code: $($proc.ExitCode)"
-          if ($proc.ExitCode -ne 0) { throw "Packaged exe selfcheck failed" }
+          Get-Content selfcheck.out, selfcheck.err -ErrorAction SilentlyContinue
+          if ($proc.ExitCode -ne 0) {
+            $log = Join-Path $env:TEMP "voice_sales_selfcheck.log"
+            if (Test-Path $log) { Get-Content $log | ForEach-Object { Write-Host "::error::$_" } }
+            throw "Packaged exe selfcheck failed"
+          }
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
