@@ -28,9 +28,14 @@ PALETTE = {
 
 def resource_path(relative: str) -> Path:
     """Resolve a resource both in source checkout and inside onefile exe."""
-    if getattr(sys, "_MEIPASS", None):
-        return Path(sys._MEIPASS) / "app" / "resources" / relative
-    return Path(__file__).parent / "resources" / relative
+    from .paths import resource_path as _resolve
+    return _resolve(relative)
+
+
+def preset_path(filename: str) -> Path:
+    """Resolve a demo catalog from presets/ in checkout and PyInstaller bundle."""
+    from .paths import preset_path as _resolve
+    return _resolve(filename)
 
 
 def load_stylesheet() -> str:

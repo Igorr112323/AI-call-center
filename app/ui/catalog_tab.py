@@ -151,6 +151,26 @@ class CatalogTab(QWidget):
         btn_row.addWidget(self.import_status)
         btn_row.addStretch(1)
         import_card.layout().addLayout(btn_row)
+
+        preset_row = QHBoxLayout()
+        preset_caption = QLabel("Демо-каталог в один клик:")
+        preset_caption.setProperty("role", "fieldLabel")
+        preset_row.addWidget(preset_caption)
+        self._preset_files = {
+            "Актуаторы": "actuators_catalog.xlsx",
+            "РВД": "rvd_hydraulics_catalog.xlsx",
+            "Коробки": "corrugated_boxes_catalog.xlsx",
+        }
+        for label, filename in self._preset_files.items():
+            preset_btn = QPushButton(f"  {label}")
+            preset_btn.setObjectName("Chip")
+            preset_btn.setIcon(icons.icon("package", PALETTE["text_muted"], 14))
+            preset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            preset_btn.clicked.connect(
+                lambda _=False, f=filename: self._load_preset(f))
+            preset_row.addWidget(preset_btn)
+        preset_row.addStretch(1)
+        import_card.layout().addLayout(preset_row)
         box.addWidget(import_card)
 
         test_card = Card()
@@ -186,6 +206,10 @@ class CatalogTab(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, "Выберите прайс-лист", "", _FILE_FILTER)
         if path:
             self._import_file(path)
+
+    def _load_preset(self, filename: str) -> None:
+        from ..paths import preset_path
+        self._import_file(str(preset_path(filename)))
 
     def _import_file(self, path: str) -> None:
         try:

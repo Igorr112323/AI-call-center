@@ -64,6 +64,19 @@ with tempfile.TemporaryDirectory() as tmp:
     win.catalog_tab.btn_local.click()
     assert win.catalog_tab.stack.currentIndex() == 0
 
+    # one-click demo catalogs: every preset imports through the production path
+    assert len(win.catalog_tab._preset_files) == 3
+    win.catalog_tab._load_preset("actuators_catalog.xlsx")
+    app.processEvents()
+    assert win.catalog_tab.provider.count() == 50
+    assert "50 товаров" in win.catalog_tab.import_badge.text()
+    win.catalog_tab._load_preset("rvd_hydraulics_catalog.xlsx")
+    app.processEvents()
+    assert win.catalog_tab.provider.count() == 50
+    # restore the actuator test catalog for the downstream simulator flow
+    win.catalog_tab._import_file(str(price_csv))
+    app.processEvents()
+
     # call control bar exists and reflects engine availability
     assert win.call_bar.active is False
     win.call_bar.set_audio_available(False)
