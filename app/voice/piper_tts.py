@@ -50,6 +50,7 @@ class PiperTts:
         self.cfg = config
         self.sample_rate = config.sample_rate
         self._voice = None
+        self._synth_config_cls = None
         self._load_failed = False
 
     def _length_scale(self) -> float:
@@ -67,13 +68,14 @@ class PiperTts:
                 f"bundled Piper model not found in {PIPER_DIR}/")
         model_path, config_path = paths
         try:
-            from piper import PiperVoice  # noqa: PLC0415
+            from piper import PiperVoice, SynthesisConfig  # noqa: PLC0415
         except Exception as exc:  # noqa: BLE001
             self._load_failed = True
             raise PiperUnavailable(f"piper package unavailable: {exc}") from exc
         try:
             self._voice = PiperVoice.load(
                 str(model_path), config_path=str(config_path))
+            self._synth_config_cls = SynthesisConfig
             log.info("Piper neural voice loaded: %s", MODEL_STEM)
         except Exception as exc:  # noqa: BLE001
             self._load_failed = True
@@ -83,10 +85,13 @@ class PiperTts:
         if self._voice is None:
             self._load_voice()
         buf = io.BytesIO()
-        # Piper writes a complete 16-bit mono WAV into the wave writer.
+        # Released piper-tts API: synthesize_wav configures the wave writer
+        # (rate/width/channels) itself and writes one chunk per sentence.
+        syn_config = self._synth_config_cls(
+            length_scale=self._length_scale())
         with wave.open(buf, "wb") as wav_writer:
-            self._voice.synthesize(
-                text, wav_writer, length_scale=self._length_scale())
+            self._voice.synthesize_wav(
+                text, wav_writer, syn_config=syn_config)
         buf.seek(0)
         with wave.open(buf, "rb") as wav_reader:
             pcm = wav_reader.readframes(wav_reader.getnframes())

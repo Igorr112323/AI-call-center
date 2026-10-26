@@ -33,6 +33,11 @@ def _tone_wav_bytes(sample_rate: int = 22050, duration: float = 0.2) -> bytes:
     return bytes(frames)
 
 
+class _FakeSynthesisConfig:
+    def __init__(self, length_scale=None, **kwargs):
+        self.length_scale = length_scale
+
+
 class _FakePiperVoice:
     instances: list = []
     last_length_scale = None
@@ -41,13 +46,14 @@ class _FakePiperVoice:
         self.calls = []
         _FakePiperVoice.instances.append(self)
 
-    def synthesize(self, text, wav_writer, length_scale=None, **kwargs):
-        self.calls.append((text, length_scale))
-        _FakePiperVoice.last_length_scale = length_scale
-        wav_writer.setframerate(22050)
-        wav_writer.setsampwidth(2)
-        wav_writer.setnchannels(1)
-        wav_writer.writeframes(_tone_wav_bytes())
+    def synthesize_wav(self, text, wav_file, syn_config=None, **kwargs):
+        self.calls.append((text, syn_config.length_scale if syn_config else None))
+        _FakePiperVoice.last_length_scale = (
+            syn_config.length_scale if syn_config else None)
+        wav_file.setframerate(22050)
+        wav_file.setsampwidth(2)
+        wav_file.setnchannels(1)
+        wav_file.writeframes(_tone_wav_bytes())
 
 
 def _install_fake_piper(monkeypatch, *, load_error=None):
@@ -55,13 +61,14 @@ def _install_fake_piper(monkeypatch, *, load_error=None):
 
     class _Voice:
         @staticmethod
-        def load(model_path, config_path=None):
+        def load(model_path, config_path=None, **kwargs):
             if load_error is not None:
                 raise load_error
             assert Path(model_path).exists() and Path(config_path).exists()
             return _FakePiperVoice()
 
     module.PiperVoice = _Voice
+    module.SynthesisConfig = _FakeSynthesisConfig
     monkeypatch.setitem(sys.modules, "piper", module)
 
 
