@@ -56,6 +56,8 @@ jobs:
           import sys
           import traceback
           try:
+              sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+              sys.stderr.reconfigure(encoding="utf-8", errors="replace")
               print("phase: import comtypes", flush=True)
               import comtypes
               print("comtypes", getattr(comtypes, "__version__", "?"), flush=True)
@@ -63,12 +65,18 @@ jobs:
               print("phase: construct renderer", flush=True)
               r = NativeSapiRenderer(rate=1)
               print("phase: render_wav", flush=True)
-              wav = r.render_wav("Проверка голосового движка")
+              # ASCII-only source via unicode escapes (Russian test phrase)
+              phrase = "\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u0433\u043e\u043b\u043e\u0441\u043e\u0432\u043e\u0433\u043e \u0434\u0432\u0438\u0436\u043a\u0430"
+              wav = r.render_wav(phrase)
               print("phase: decode wav, bytes=", len(wav), flush=True)
               pcm, rate, ch = decode_wav(wav)
               assert rate > 0 and len(pcm) > 1000
               print(f"Native SAPI OK: {rate} Hz, {len(pcm)} PCM bytes", flush=True)
           except Exception:
+              try:
+                  sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+              except Exception:
+                  pass
               msg = " | ".join(traceback.format_exc().splitlines())[:1450]
               print(f"::error title=SAPI native smoke failed::{msg}", flush=True)
               raise

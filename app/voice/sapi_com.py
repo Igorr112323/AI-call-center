@@ -97,8 +97,15 @@ class NativeSapiRenderer:
         """Synthesize ``text`` synchronously, return complete WAV file bytes."""
         if not hasattr(self._local, "voice"):
             self._bind()
-        self._local.voice.Speak(text, SVSF_PURGE_BEFORE_SPEAK)
-        wav = self._as_bytes(self._local.stream.GetData())
+        voice, stream = self._local.voice, self._local.stream
+        voice.Speak(text, SVSF_PURGE_BEFORE_SPEAK)
+        # Speak leaves the memory stream position at the end; GetData reads
+        # from the current position, so rewind first or we get zero bytes.
+        try:
+            stream.Seek(0, 0)
+        except Exception:  # noqa: BLE001 - some bindings rewind implicitly
+            pass
+        wav = self._as_bytes(stream.GetData())
         if not wav:
             raise NativeSapiError("SAPI returned an empty audio stream")
         return wav

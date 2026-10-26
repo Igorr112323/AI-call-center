@@ -186,11 +186,20 @@ class _FakeVoice:
 
 
 class _FakeStream:
+    """Models SpMemoryStream: GetData reads from the current seek position."""
+
     def __init__(self, payload):
         self._payload = payload
+        self._pos = len(payload)  # Speak leaves position at end
+        self.seeks = []
+
+    def Seek(self, offset, origin):
+        self.seeks.append((offset, origin))
+        if origin == 0:
+            self._pos = offset
 
     def GetData(self):
-        return self._payload
+        return self._payload[self._pos:]
 
 
 def _install_fake_comtypes(monkeypatch, *, russian_voices=1, payload=None,
@@ -283,6 +292,41 @@ def test_native_renderer_empty_stream_raises(monkeypatch):
     _install_fake_comtypes(monkeypatch, payload=b"")
     with pytest.raises(NativeSapiError):
         NativeSapiRenderer().render_wav("Тихо")
+
+
+def test_render_wav_rewinds_memory_stream_before_getdata(monkeypatch):
+    state = _install_fake_comtypes(monkeypatch)
+    renderer = NativeSapiRenderer()
+    wav = renderer.render_wav("Перемотка")
+    stream = state["voice"].AudioOutputStream
+    # without the Seek(0,0), GetData would return b"" (position at end)
+    assert stream.seeks == [(0, 0)]
+    assert wav[:4] == b"RIFF"
+
+
+def test_render_wav_survives_stream_without_seek(monkeypatch):
+    state = _install_fake_comtypes(monkeypatch)
+
+    class SeeklessStream(_FakeStream):
+        def Seek(self, offset, origin):
+            raise OSError("Seek not supported")
+
+        def GetData(self):
+            return self._payload  # binding rewinds implicitly
+
+    state  # voice created via installer; swap stream through a fresh bind
+    com = sys.modules["comtypes"]
+    original = com.client.CreateObject
+
+    def create(progid, dynamic=False):
+        obj = original(progid, dynamic=dynamic)
+        if isinstance(obj, _FakeStream):
+            return SeeklessStream(obj._payload)
+        return obj
+
+    com.client.CreateObject = create
+    renderer = NativeSapiRenderer()
+    assert renderer.render_wav("Без перемотки")[:4] == b"RIFF"
 
 
 def test_decode_wav_rejects_non_16bit():
