@@ -266,9 +266,14 @@ class Storage:
             self._conn.execute("BEGIN")
             try:
                 self._conn.execute("DELETE FROM local_catalog")
+                # ON CONFLICT keeps one row per sku even when the imported file
+                # itself contains duplicate articles (last row wins).
                 self._conn.executemany(
                     "INSERT INTO local_catalog(sku, name, category, price, stock, params_json) "
-                    "VALUES (:sku, :name, :category, :price, :stock, :params_json)",
+                    "VALUES (:sku, :name, :category, :price, :stock, :params_json) "
+                    "ON CONFLICT(sku) DO UPDATE SET name=excluded.name, "
+                    "category=excluded.category, price=excluded.price, "
+                    "stock=excluded.stock, params_json=excluded.params_json",
                     rows,
                 )
                 self._conn.execute("COMMIT")
