@@ -65,6 +65,7 @@ def test_synthesize_decodes_and_resamples_wav(tmp_path, monkeypatch):
         _write_wav(out_path, sample_rate=16000, channels=1)
 
     monkeypatch.setattr("app.voice.tts.subprocess.run", fake_run)
+    tts._native_disabled = True  # isolate the PowerShell fallback path
     pcm = tts._synthesize_blocking("Проверка связи")
     # 0.3 s of source audio resampled to 24 kHz 16-bit mono
     assert len(pcm) == pytest.approx(0.3 * 24000 * 2, rel=0.05)
@@ -83,6 +84,7 @@ def test_synthesize_downmixes_stereo(tmp_path, monkeypatch):
                    sample_rate=22050, channels=2)
 
     monkeypatch.setattr("app.voice.tts.subprocess.run", fake_run)
+    tts._native_disabled = True  # isolate the PowerShell fallback path
     pcm = tts._synthesize_blocking("Стерео в моно")
     assert pcm  # non-empty mono PCM, no exception on stereo input
 
@@ -93,6 +95,7 @@ def test_synthesis_failure_returns_silence_instead_of_raising(monkeypatch):
 
     monkeypatch.setattr("app.voice.tts.subprocess.run", boom)
     tts = SapiTts(TtsConfig(sample_rate=16000))
+    tts._native_disabled = True  # isolate the PowerShell fallback path
     pcm = tts._synthesize_blocking("Тихий сбой")
     assert pcm == b"\x00\x00" * (16000 // 4)
 
