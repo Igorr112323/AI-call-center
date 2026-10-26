@@ -192,19 +192,28 @@ class _FakeVoice:
         self.calls.append((text, flags))
 
 
+class _FakeAudioFormat:
+    def __init__(self):
+        self.Type = None
+
+
 class _FakeFileStream:
     """Models SpFileStream: Open writes the WAV, Close finalises it."""
 
     def __init__(self, payload: bytes):
         self._payload = payload
+        self.Format = None
         self.opened = None
         self.closed = 0
+        self.order = []
 
     def Open(self, path, mode):
+        self.order.append("open")
         self.opened = (path, mode)
         Path(path).write_bytes(self._payload)
 
     def Close(self):
+        self.order.append("close")
         self.closed += 1
 
 
@@ -212,7 +221,7 @@ def _install_fake_comtypes(monkeypatch, *, russian_voices=1, payload=None,
                            create_error=None, setvoice_raises=False,
                            stream_open_raises=False):
     payload = _wav_bytes() if payload is None else payload
-    state = {"voice": None, "streams": [], "coinit": 0}
+    state = {"voice": None, "streams": [], "formats": [], "coinit": 0}
 
     com = types.ModuleType("comtypes")
 
@@ -231,6 +240,10 @@ def _install_fake_comtypes(monkeypatch, *, russian_voices=1, payload=None,
                                setvoice_raises=setvoice_raises)
             state["voice"] = voice
             return voice
+        if progid == "SAPI.SpAudioFormat":
+            fmt = _FakeAudioFormat()
+            state["formats"].append(fmt)
+            return fmt
         if progid == "SAPI.SpFileStream":
             if stream_open_raises:
                 class _Boom(_FakeFileStream):
@@ -259,12 +272,16 @@ def test_native_renderer_binds_com_and_renders_in_process(monkeypatch):
     stream = state["streams"][0]
     assert state["coinit"] >= 1
     assert voice.Rate == 2 and voice.Volume == 90
-    assert voice.setoutput_calls == [(stream, True)]  # SetOutput, not property put
-    assert voice.AudioOutputStream is stream
+    assert voice.setoutput_calls == []  # SetOutput is absent from IDispatch
+    assert voice.AudioOutputStream is stream  # property putref binds output
     assert len(voice.setvoice_calls) == 1  # Russian token via SetVoice method
     assert voice.Voice is None              # no ambiguous property put
     assert voice.calls == [("Здравствуйте", sapi_com.SVSF_PURGE_BEFORE_SPEAK)]
+    # explicit compatible audio format is pinned before the file opens
+    assert state["formats"][0].Type == sapi_com.SAFT_22KHZ_16BIT_MONO
+    assert isinstance(stream.Format, _FakeAudioFormat)
     assert stream.opened[1] == sapi_com.SSFM_CREATE_FOR_WRITE
+    assert stream.order[0] == "open"
     assert stream.closed >= 1
     assert not Path(stream.opened[0]).exists()  # temp WAV removed
     assert wav[:4] == b"RIFF"

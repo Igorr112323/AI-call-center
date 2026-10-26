@@ -62,6 +62,12 @@ jobs:
               import comtypes
               print("comtypes", getattr(comtypes, "__version__", "?"), flush=True)
               from app.voice.sapi_com import NativeSapiRenderer, decode_wav
+              import comtypes.client as cc
+              probe = cc.CreateObject("SAPI.SpVoice", dynamic=True)
+              all_voices = probe.GetVoices("")
+              print("installed voices:", all_voices.Count, flush=True)
+              for idx in range(min(all_voices.Count, 5)):
+                  print(" voice", idx, all_voices.Item(idx).GetDescription(), flush=True)
               print("phase: construct renderer", flush=True)
               r = NativeSapiRenderer(rate=1)
               print("phase: render_wav", flush=True)

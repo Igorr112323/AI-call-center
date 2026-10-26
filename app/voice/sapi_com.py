@@ -29,6 +29,8 @@ SSFM_CREATE_FOR_WRITE = 3
 # IDispatch invocation kind (stable wtypes.h constants, avoids importing
 # comtypes.automation on platforms where comtypes cannot load)
 DISPATCH_METHOD = 1
+# SpeechAudioFormatType::SAFT22kHz16BitMono — the classic SAPI WAV format
+SAFT_22KHZ_16BIT_MONO = 22
 
 
 class NativeSapiError(RuntimeError):
@@ -122,16 +124,19 @@ class NativeSapiRenderer:
             try:
                 stream = comtypes.client.CreateObject(
                     "SAPI.SpFileStream", dynamic=True)
+                # The automation AudioOutputStream putref is the equivalent
+                # of SetOutput(stream, FALSE): the voice cannot renegotiate
+                # the stream format. Pin an explicit compatible format up
+                # front, otherwise Speak silently writes zero audio frames.
+                audio_format = comtypes.client.CreateObject(
+                    "SAPI.SpAudioFormat", dynamic=True)
+                audio_format.Type = SAFT_22KHZ_16BIT_MONO
+                stream.Format = audio_format
                 stream.Open(wav_path, SSFM_CREATE_FOR_WRITE)
-                # SetOutput is the documented high-level binding (the same
-                # call .NET's SetOutputToWaveFile makes); AllowFormatChanges
-                # lets SAPI negotiate the voice's preferred stream format.
-                try:
-                    _call(self._local.voice, "SetOutput", stream, True)
-                except Exception:  # noqa: BLE001 - property put as last resort
-                    log.warning("SetOutput failed, trying AudioOutputStream put",
-                                exc_info=True)
-                    self._local.voice.AudioOutputStream = stream
+                # ISpeechVoice (the IDispatch interface) has no SetOutput
+                # method — automation clients bind output through this
+                # property; the explicit format above makes it non-negotiable
+                self._local.voice.AudioOutputStream = stream
                 self._local.voice.Speak(text, SVSF_PURGE_BEFORE_SPEAK)
                 stream.Close()
                 with open(wav_path, "rb") as fh:
