@@ -54,7 +54,7 @@ a = Analysis(
     # Heavy optional ML stacks (Silero VAD via torch.hub, faster-whisper,
     # F5-TTS) are documented add-ons, downloaded on demand — not bundled.
     excludes=["tkinter", "matplotlib", "pytest", "torch", "faster_whisper",
-              "f5_tts", "xlrd", "pymupdf", "fitz", "PIL"],
+              "f5_tts", "xlrd", "pymupdf", "fitz"],
     noarchive=False,
 )
 
