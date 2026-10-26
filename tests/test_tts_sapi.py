@@ -10,6 +10,7 @@ import json
 import math
 import struct
 import sys
+import tempfile
 import types
 import wave
 from pathlib import Path
@@ -160,10 +161,8 @@ class _FakeTokens:
 
 
 class _FakeVoice:
-    def __init__(self, russian_voices: int = 1, getdata: bytes | tuple = b"",
-                 setvoice_raises: bool = False, propget_raises: bool = False):
+    def __init__(self, russian_voices: int = 1, setvoice_raises: bool = False):
         self.russian_voices = russian_voices
-        self._getdata = getdata
         self._setvoice_raises = setvoice_raises
         self.Rate = None
         self.Volume = None
@@ -185,27 +184,27 @@ class _FakeVoice:
         self.calls.append((text, flags))
 
 
-class _FakeStream:
-    """Models SpMemoryStream: GetData reads from the current seek position."""
+class _FakeFileStream:
+    """Models SpFileStream: Open writes the WAV, Close finalises it."""
 
-    def __init__(self, payload):
+    def __init__(self, payload: bytes):
         self._payload = payload
-        self._pos = len(payload)  # Speak leaves position at end
-        self.seeks = []
+        self.opened = None
+        self.closed = 0
 
-    def Seek(self, offset, origin):
-        self.seeks.append((offset, origin))
-        if origin == 0:
-            self._pos = offset
+    def Open(self, path, mode):
+        self.opened = (path, mode)
+        Path(path).write_bytes(self._payload)
 
-    def GetData(self):
-        return self._payload[self._pos:]
+    def Close(self):
+        self.closed += 1
 
 
 def _install_fake_comtypes(monkeypatch, *, russian_voices=1, payload=None,
-                           create_error=None, setvoice_raises=False):
+                           create_error=None, setvoice_raises=False,
+                           stream_open_raises=False):
     payload = _wav_bytes() if payload is None else payload
-    state = {"voice": None, "coinit": 0}
+    state = {"voice": None, "streams": [], "coinit": 0}
 
     com = types.ModuleType("comtypes")
 
@@ -224,8 +223,16 @@ def _install_fake_comtypes(monkeypatch, *, russian_voices=1, payload=None,
                                setvoice_raises=setvoice_raises)
             state["voice"] = voice
             return voice
-        if progid == "SAPI.SpMemoryStream":
-            return _FakeStream(payload)
+        if progid == "SAPI.SpFileStream":
+            if stream_open_raises:
+                class _Boom(_FakeFileStream):
+                    def Open(self, path, mode):
+                        raise OSError("file stream unavailable")
+                stream = _Boom(payload)
+            else:
+                stream = _FakeFileStream(payload)
+            state["streams"].append(stream)
+            return stream
         raise NativeSapiError(f"unknown progid {progid}")
 
     client.CreateObject = _create
@@ -241,19 +248,24 @@ def test_native_renderer_binds_com_and_renders_in_process(monkeypatch):
     wav = renderer.render_wav("Здравствуйте")
 
     voice = state["voice"]
+    stream = state["streams"][0]
     assert state["coinit"] >= 1
     assert voice.Rate == 2 and voice.Volume == 90
-    assert isinstance(voice.AudioOutputStream, _FakeStream)
+    assert voice.AudioOutputStream is stream
     assert len(voice.setvoice_calls) == 1  # Russian token via SetVoice method
     assert voice.Voice is None              # no ambiguous property put
     assert voice.calls == [("Здравствуйте", sapi_com.SVSF_PURGE_BEFORE_SPEAK)]
+    assert stream.opened[1] == sapi_com.SSFM_CREATE_FOR_WRITE
+    assert stream.closed >= 1
+    assert not Path(stream.opened[0]).exists()  # temp WAV removed
     assert wav[:4] == b"RIFF"
 
-    # second phrase reuses the bound thread-local objects (no rebind)
+    # second phrase reuses the bound voice (no rebind) but takes a fresh stream
     coinit_before = state["coinit"]
     renderer.render_wav("Ещё фраза")
     assert state["coinit"] == coinit_before
     assert len(voice.calls) == 2
+    assert len(state["streams"]) == 2
 
 
 def test_native_renderer_without_russian_voice_keeps_default(monkeypatch):
@@ -275,58 +287,26 @@ def test_native_renderer_falls_back_to_property_put(monkeypatch):
     assert voice.calls
 
 
-def test_native_renderer_accepts_tuple_getdata(monkeypatch):
-    raw = _wav_bytes()
-    _install_fake_comtypes(monkeypatch, payload=tuple(raw))
-    renderer = NativeSapiRenderer()
-    assert renderer.render_wav("Поток кортежем")[:4] == b"RIFF"
-
-
 def test_native_renderer_com_failure_raises(monkeypatch):
     _install_fake_comtypes(monkeypatch, create_error=OSError("no registry"))
     with pytest.raises(NativeSapiError):
         NativeSapiRenderer().render_wav("Сбой")
 
 
-def test_native_renderer_empty_stream_raises(monkeypatch):
-    _install_fake_comtypes(monkeypatch, payload=b"")
+def test_native_renderer_empty_wav_raises_and_cleans_temp(monkeypatch):
+    state = _install_fake_comtypes(monkeypatch, payload=b"")
     with pytest.raises(NativeSapiError):
         NativeSapiRenderer().render_wav("Тихо")
+    assert not Path(state["streams"][0].opened[0]).exists()
 
 
-def test_render_wav_rewinds_memory_stream_before_getdata(monkeypatch):
-    state = _install_fake_comtypes(monkeypatch)
-    renderer = NativeSapiRenderer()
-    wav = renderer.render_wav("Перемотка")
-    stream = state["voice"].AudioOutputStream
-    # without the Seek(0,0), GetData would return b"" (position at end)
-    assert stream.seeks == [(0, 0)]
-    assert wav[:4] == b"RIFF"
-
-
-def test_render_wav_survives_stream_without_seek(monkeypatch):
-    state = _install_fake_comtypes(monkeypatch)
-
-    class SeeklessStream(_FakeStream):
-        def Seek(self, offset, origin):
-            raise OSError("Seek not supported")
-
-        def GetData(self):
-            return self._payload  # binding rewinds implicitly
-
-    state  # voice created via installer; swap stream through a fresh bind
-    com = sys.modules["comtypes"]
-    original = com.client.CreateObject
-
-    def create(progid, dynamic=False):
-        obj = original(progid, dynamic=dynamic)
-        if isinstance(obj, _FakeStream):
-            return SeeklessStream(obj._payload)
-        return obj
-
-    com.client.CreateObject = create
-    renderer = NativeSapiRenderer()
-    assert renderer.render_wav("Без перемотки")[:4] == b"RIFF"
+def test_native_renderer_stream_open_failure_cleans_temp(monkeypatch):
+    state = _install_fake_comtypes(monkeypatch, stream_open_raises=True)
+    with pytest.raises(NativeSapiError):
+        NativeSapiRenderer().render_wav("Сбой потока")
+    # mkstemp created the path before Open; finally block must remove it
+    leftover = list(Path(tempfile.gettempdir()).glob("sapi_*.wav"))
+    assert not leftover
 
 
 def test_decode_wav_rejects_non_16bit():
