@@ -172,6 +172,7 @@ class _FakeVoice:
         self.AudioOutputStream = None
         self.Voice = None
         self.setvoice_calls = []
+        self.setoutput_calls = []
         self.calls = []
 
     def GetVoices(self, attribute):
@@ -182,6 +183,10 @@ class _FakeVoice:
         if self._setvoice_raises:
             raise OSError("SetVoice unsupported")
         self.setvoice_calls.append(token)
+
+    def SetOutput(self, stream, allow_format_changes):
+        self.setoutput_calls.append((stream, allow_format_changes))
+        self.AudioOutputStream = stream
 
     def Speak(self, text, flags):
         self.calls.append((text, flags))
@@ -254,6 +259,7 @@ def test_native_renderer_binds_com_and_renders_in_process(monkeypatch):
     stream = state["streams"][0]
     assert state["coinit"] >= 1
     assert voice.Rate == 2 and voice.Volume == 90
+    assert voice.setoutput_calls == [(stream, True)]  # SetOutput, not property put
     assert voice.AudioOutputStream is stream
     assert len(voice.setvoice_calls) == 1  # Russian token via SetVoice method
     assert voice.Voice is None              # no ambiguous property put
@@ -300,6 +306,19 @@ def test_native_renderer_empty_wav_raises_and_cleans_temp(monkeypatch):
     state = _install_fake_comtypes(monkeypatch, payload=b"")
     with pytest.raises(NativeSapiError):
         NativeSapiRenderer().render_wav("Тихо")
+    assert not Path(state["streams"][0].opened[0]).exists()
+
+
+def test_native_renderer_header_only_wav_raises(monkeypatch):
+    header_only = io.BytesIO()
+    with wave.open(header_only, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(22050)  # zero frames -> bare 44-byte header
+    state = _install_fake_comtypes(monkeypatch, payload=header_only.getvalue())
+    assert 0 < len(header_only.getvalue()) <= 46
+    with pytest.raises(NativeSapiError, match="header-only"):
+        NativeSapiRenderer().render_wav("Нет фреймов")
     assert not Path(state["streams"][0].opened[0]).exists()
 
 

@@ -98,7 +98,10 @@ class NativeSapiRenderer:
                 stream = comtypes.client.CreateObject(
                     "SAPI.SpFileStream", dynamic=True)
                 stream.Open(wav_path, SSFM_CREATE_FOR_WRITE)
-                self._local.voice.AudioOutputStream = stream
+                # SetOutput is the documented high-level binding (the same
+                # call .NET's SetOutputToWaveFile makes); AllowFormatChanges
+                # lets SAPI negotiate the voice's preferred stream format.
+                self._local.voice.SetOutput(stream, True)
                 self._local.voice.Speak(text, SVSF_PURGE_BEFORE_SPEAK)
                 stream.Close()
                 with open(wav_path, "rb") as fh:
@@ -107,8 +110,10 @@ class NativeSapiRenderer:
                 raise
             except Exception as exc:  # noqa: BLE001 - normalise COM/ctypes errors
                 raise NativeSapiError(f"SAPI render failed: {exc}") from exc
-            if not wav:
-                raise NativeSapiError("SAPI produced an empty WAV file")
+            # A 44-46 byte file is a bare WAV header: Speak wrote no frames
+            if len(wav) <= 64:
+                raise NativeSapiError(
+                    f"SAPI produced a header-only WAV ({len(wav)} bytes)")
             return wav
         finally:
             if stream is not None:
