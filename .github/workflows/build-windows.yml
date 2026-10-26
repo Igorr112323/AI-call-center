@@ -131,14 +131,16 @@ jobs:
             -Wait -PassThru -NoNewWindow `
             -RedirectStandardOutput "$env:TEMP\sapi_native.out" `
             -RedirectStandardError "$env:TEMP\sapi_native.err"
-          $out = ((Get-Content "$env:TEMP\sapi_native.out", "$env:TEMP\sapi_native.err" `
-            -ErrorAction SilentlyContinue) -join " | ")
           if ($proc.ExitCode -ne 0) {
-            if ($out.Length -gt 1400) { $out = $out.Substring($out.Length - 1400) }
-            Write-Host "::error title=SAPI native smoke failed::$out"
+            $joined = ((Get-Content "$env:TEMP\sapi_native.out", "$env:TEMP\sapi_native.err" `
+              -ErrorAction SilentlyContinue) -join " | ")
+            if ($joined.Length -gt 1400) { $joined = $joined.Substring($joined.Length - 1400) }
+            Write-Host "::error title=SAPI native smoke failed::$joined"
             throw "Native SAPI smoke failed (see annotation)"
           }
-          Write-Host $out
+          # preserve line boundaries so ::warning/::error commands parse
+          Get-Content "$env:TEMP\sapi_native.out", "$env:TEMP\sapi_native.err" `
+            -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
       - name: Verify SAPI PowerShell fallback path
         shell: powershell
         run: |
