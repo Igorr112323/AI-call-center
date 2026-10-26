@@ -72,7 +72,7 @@ class SttConfig:
 
 @dataclass
 class TtsConfig:
-    provider: str = "mock"                   # yandex_v3 | f5 | mock
+    provider: str = "auto"                   # auto | sapi | mock | yandex_v3 | f5
     api_key: str = ""
     folder_id: str = ""
     voice: str = "alena"
@@ -202,6 +202,11 @@ class AppSettings:
             return settings
         settings = _from_dict(cls, raw)
         settings._path = path
+        # Legacy builds shipped the tone stub as the default; upgrade users
+        # to the native offline voice. Explicit "mock" can still be reselected
+        # manually in settings or forced by tests after load().
+        if isinstance(raw.get("tts"), dict) and raw["tts"].get("provider") == "mock":
+            settings.tts.provider = "auto"
         _apply_env_overrides(settings)
         return settings
 

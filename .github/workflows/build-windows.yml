@@ -49,6 +49,20 @@ jobs:
       - name: Headless self-check before packaging
         run: python run.py --selfcheck
 
+      - name: Verify built-in Windows SAPI voice synthesizes
+        shell: powershell
+        run: |
+          Add-Type -AssemblyName System.Speech
+          $out = Join-Path $env:TEMP "sapi_smoke.wav"
+          $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+          $s.SetOutputToWaveFile($out)
+          $s.Speak("Проверка голосового движка")
+          $s.Dispose()
+          if (-not (Test-Path $out) -or (Get-Item $out).Length -lt 1000) {
+            throw "SAPI did not produce a valid WAV"
+          }
+          Write-Host "SAPI smoke OK, WAV size: $((Get-Item $out).Length) bytes"
+
       - name: Build onefile executable
         run: pyinstaller VoiceSalesAgent.spec --noconfirm
 

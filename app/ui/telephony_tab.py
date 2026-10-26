@@ -77,7 +77,7 @@ class TelephonyTab(QWidget):
         self.stt_provider = QComboBox()
         self.stt_provider.addItems(["mock", "yandex_v3", "faster_whisper"])
         self.tts_provider = QComboBox()
-        self.tts_provider.addItems(["mock", "yandex_v3", "f5"])
+        self.tts_provider.addItems(["auto", "sapi", "mock", "yandex_v3", "f5"])
         self.voice_name = QLineEdit()
         self.voice_name.setPlaceholderText("alena")
         self.emotion = QComboBox()

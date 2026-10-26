@@ -1,15 +1,21 @@
 """Text-to-speech providers.
 
+* SapiTts      — built-in offline Windows speech (System.Speech), no keys;
 * YandexTtsV3 — branded Russian voices, gRPC streaming, sub-300 ms first chunk;
 * F5Tts        — local SOTA zero-shot voice clone (https://github.com/SWivid/F5-TTS);
-* MockTts      — offline PCM generator keeping the pipeline fully runnable.
+* MockTts      — offline PCM tone keeping the pipeline fully runnable.
 """
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import math
 import struct
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
 
 from ..config import TtsConfig
 
@@ -46,6 +52,75 @@ class MockTts(TTSProvider):
         n = int(self.sample_rate * duration_sec)
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, _tone_pcm, n, self.sample_rate)
+
+
+class SapiTts(TTSProvider):
+    """Offline Windows voice via the built-in System.Speech (SAPI) engine.
+
+    Renders each phrase to a WAV file through PowerShell (no third-party
+    dependency, works without internet or API keys), then decodes and
+    resamples the WAV into the pipeline's 16-bit mono PCM contract.
+    """
+
+    def __init__(self, config: TtsConfig):
+        self.cfg = config
+        self.sample_rate = config.sample_rate
+
+    @staticmethod
+    def _powershell_command(text: str, wav_path: str, rate: int) -> str:
+        """Build the PS script; text/path ride as base64 to dodge quoting."""
+        text_b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        path_b64 = base64.b64encode(wav_path.encode("utf-8")).decode("ascii")
+        script = f"""
+Add-Type -AssemblyName System.Speech
+$text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{text_b64}'))
+$out = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{path_b64}'))
+$s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+try {{
+  $ru = $s.GetInstalledVoices() | Where-Object {{ $_.VoiceInfo.Culture.Name -like 'ru*' }}
+  if ($ru) {{ $s.SelectVoice($ru[0].VoiceInfo.Name) }}
+}} catch {{}}
+$s.Rate = {rate}
+$s.SetOutputToWaveFile($out)
+$s.Speak($text)
+$s.Dispose()
+"""
+        # -EncodedCommand expects UTF-16LE base64
+        return base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+
+    def _synthesize_blocking(self, text: str) -> bytes:
+        from ..core.audio import read_wav, resample_linear, to_mono
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as fh:
+            wav_path = fh.name
+        try:
+            rate = max(-10, min(10, round((self.cfg.speed - 1.0) * 4)))
+            encoded = self._powershell_command(text, wav_path, rate)
+            command = (
+                ["powershell.exe", "-NoProfile", "-NonInteractive",
+                 "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded]
+                if sys.platform == "win32"
+                else ["pwsh", "-NoProfile", "-NonInteractive",
+                      "-EncodedCommand", encoded]
+            )
+            subprocess.run(command, check=True, capture_output=True, timeout=30)
+            pcm, src_rate, channels = read_wav(Path(wav_path))
+            pcm = to_mono(pcm, channels)
+            return resample_linear(pcm, src_rate, self.sample_rate)
+        except Exception:  # noqa: BLE001 - speech must never break a live call
+            log.exception("SAPI synthesis failed; returning silence")
+            return b"\x00\x00" * (self.sample_rate // 4)  # 0.25 s silence
+        finally:
+            try:
+                Path(wav_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    async def synthesize(self, text: str) -> bytes:
+        if not text.strip():
+            return b""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._synthesize_blocking, text)
 
 
 class YandexTtsV3(TTSProvider):
@@ -146,5 +221,18 @@ def build_tts(config: TtsConfig) -> TTSProvider:
         return YandexTtsV3(config)
     if config.provider == "f5":
         return F5Tts(config)
-    log.info("TTS running in mock mode")
+    if config.provider == "sapi":
+        if sys.platform == "win32":
+            log.info("TTS running on built-in Windows SAPI voice")
+            return SapiTts(config)
+        log.warning("SAPI TTS selected but host is %s; falling back to mock", sys.platform)
+        return MockTts(config)
+    if config.provider == "mock":
+        log.info("TTS running in mock mode")
+        return MockTts(config)
+    # "auto" (default): real offline voice on Windows, tone stub elsewhere
+    if sys.platform == "win32":
+        log.info("TTS auto-selected built-in Windows SAPI voice")
+        return SapiTts(config)
+    log.info("TTS auto-selected mock mode (no native speech engine)")
     return MockTts(config)
