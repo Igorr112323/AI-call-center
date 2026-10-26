@@ -1,18 +1,24 @@
 """Windows SAPI offline TTS: command building, WAV decoding and soft failure.
 
-Runs on any OS: PowerShell is never executed, subprocess.run is stubbed and
-the WAV it would have produced is generated with the stdlib wave module.
+Runs on any OS: neither PowerShell nor COM is really executed. subprocess.run
+is stubbed and the comtypes package is replaced with an in-memory fake; all
+WAV payloads are generated with the stdlib wave module.
 """
 import base64
+import io
 import json
 import math
 import struct
+import sys
+import types
 import wave
 from pathlib import Path
 
 import pytest
 
 from app.config import AppSettings, TtsConfig
+from app.voice import sapi_com
+from app.voice.sapi_com import NativeSapiError, NativeSapiRenderer, decode_wav
 from app.voice.tts import MockTts, SapiTts, build_tts
 
 
@@ -125,3 +131,194 @@ def test_default_provider_is_auto_and_legacy_mock_migrates(tmp_path):
     legacy["tts"]["provider"] = "yandex_v3"
     settings_file.write_text(json.dumps(legacy, ensure_ascii=False), encoding="utf-8")
     assert AppSettings.load(settings_file).tts.provider == "yandex_v3"
+
+
+# ---------------------------------------------------------------- in-process COM
+
+def _wav_bytes(sample_rate: int = 22050, channels: int = 1,
+               duration_sec: float = 0.25) -> bytes:
+    buf = io.BytesIO()
+    n = int(sample_rate * duration_sec)
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        frames = bytearray()
+        for i in range(n):
+            sample = int(0.2 * 32767 * math.sin(2 * math.pi * 220 * i / sample_rate))
+            frames += struct.pack("<h", sample) * channels
+        wf.writeframes(bytes(frames))
+    return buf.getvalue()
+
+
+class _FakeTokens:
+    def __init__(self, count: int):
+        self.Count = count
+
+    def Item(self, index):
+        return object()
+
+
+class _FakeVoiceToken:
+    def GetDescription(self):
+        return "Microsoft Irina Desktop"
+
+
+class _FakeVoice:
+    def __init__(self, russian_voices: int = 1, getdata: bytes | tuple = b""):
+        self.russian_voices = russian_voices
+        self._getdata = getdata
+        self.Rate = None
+        self.Volume = None
+        self.AudioOutputStream = None
+        self.Voice = None
+        self.calls = []
+
+    def GetVoices(self, attribute):
+        assert attribute == "Language=419"
+        return _FakeTokens(self.russian_voices)
+
+    def Speak(self, text, flags):
+        self.calls.append((text, flags))
+
+
+class _FakeStream:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def GetData(self):
+        return self._payload
+
+
+def _install_fake_comtypes(monkeypatch, *, russian_voices=1, payload=None,
+                           create_error=None):
+    payload = _wav_bytes() if payload is None else payload
+    state = {"voice": None, "coinit": 0}
+
+    com = types.ModuleType("comtypes")
+
+    def _coinit():
+        state["coinit"] += 1
+
+    com.CoInitialize = _coinit
+    client = types.ModuleType("comtypes.client")
+
+    def _create(progid, dynamic=False):
+        assert dynamic is True  # late binding mandatory for frozen bundles
+        if create_error is not None:
+            raise create_error
+        if progid == "SAPI.SpVoice":
+            voice = _FakeVoice(russian_voices)
+            state["voice"] = voice
+            return voice
+        if progid == "SAPI.SpMemoryStream":
+            return _FakeStream(payload)
+        raise NativeSapiError(f"unknown progid {progid}")
+
+    client.CreateObject = _create
+    com.client = client
+    monkeypatch.setitem(sys.modules, "comtypes", com)
+    monkeypatch.setitem(sys.modules, "comtypes.client", client)
+    return state
+
+
+def test_native_renderer_binds_com_and_renders_in_process(monkeypatch):
+    state = _install_fake_comtypes(monkeypatch)
+    renderer = NativeSapiRenderer(rate=2, volume=90)
+    wav = renderer.render_wav("Здравствуйте")
+
+    voice = state["voice"]
+    assert state["coinit"] >= 1
+    assert voice.Rate == 2 and voice.Volume == 90
+    assert isinstance(voice.AudioOutputStream, _FakeStream)
+    assert voice.Voice is not None  # Russian token auto-selected
+    assert voice.calls == [("Здравствуйте", sapi_com.SVSF_PURGE_BEFORE_SPEAK)]
+    assert wav[:4] == b"RIFF"
+
+    # second phrase reuses the bound thread-local objects (no rebind)
+    coinit_before = state["coinit"]
+    renderer.render_wav("Ещё фраза")
+    assert state["coinit"] == coinit_before
+    assert len(voice.calls) == 2
+
+
+def test_native_renderer_without_russian_voice_keeps_default(monkeypatch):
+    state = _install_fake_comtypes(monkeypatch, russian_voices=0)
+    renderer = NativeSapiRenderer()
+    renderer.render_wav("Текст")
+    assert state["voice"].Voice is None  # default system voice retained
+    assert state["voice"].calls  # synthesis still happened
+
+
+def test_native_renderer_accepts_tuple_getdata(monkeypatch):
+    raw = _wav_bytes()
+    _install_fake_comtypes(monkeypatch, payload=tuple(raw))
+    renderer = NativeSapiRenderer()
+    assert renderer.render_wav("Поток кортежем")[:4] == b"RIFF"
+
+
+def test_native_renderer_com_failure_raises(monkeypatch):
+    _install_fake_comtypes(monkeypatch, create_error=OSError("no registry"))
+    with pytest.raises(NativeSapiError):
+        NativeSapiRenderer().render_wav("Сбой")
+
+
+def test_native_renderer_empty_stream_raises(monkeypatch):
+    _install_fake_comtypes(monkeypatch, payload=b"")
+    with pytest.raises(NativeSapiError):
+        NativeSapiRenderer().render_wav("Тихо")
+
+
+def test_decode_wav_rejects_non_16bit():
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(1)  # 8-bit — SAPI never emits this
+        wf.setframerate(8000)
+        wf.writeframes(b"\x80" * 800)
+    with pytest.raises(NativeSapiError):
+        decode_wav(buf.getvalue())
+
+
+def test_sapitts_uses_native_path_without_subprocess(monkeypatch):
+    _install_fake_comtypes(monkeypatch)
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("PowerShell must not be spawned on native path")
+
+    monkeypatch.setattr("app.voice.tts.subprocess.run", _boom)
+    tts = SapiTts(TtsConfig(provider="sapi", sample_rate=24000))
+    pcm = tts._synthesize_blocking("Прямой COM-рендер")
+    # 0.25 s of 22.05 kHz mono resampled to 24 kHz, 16-bit
+    assert len(pcm) == pytest.approx(0.25 * 24000 * 2, rel=0.05)
+    assert tts._native_disabled is False
+
+
+def test_sapitts_falls_back_to_powershell_when_com_dead(monkeypatch):
+    _install_fake_comtypes(monkeypatch, create_error=OSError("com dead"))
+
+    def fake_run(command, **kwargs):
+        encoded = command[command.index("-EncodedCommand") + 1]
+        script = base64.b64decode(encoded).decode("utf-16-le")
+        out_b64 = [ln for ln in script.splitlines() if "$out = " in ln][0] \
+            .split("FromBase64String('")[1].split("')")[0]
+        out_path = base64.b64decode(out_b64).decode("utf-8")
+        with open(out_path, "wb") as fh:
+            fh.write(_wav_bytes(sample_rate=16000))
+
+    monkeypatch.setattr("app.voice.tts.subprocess.run", fake_run)
+    tts = SapiTts(TtsConfig(provider="sapi", sample_rate=24000))
+    pcm = tts._synthesize_blocking("Аварийный путь")
+    assert pcm
+    assert tts._native_disabled is True
+
+    # native path stays disabled: second phrase goes straight to PowerShell
+    calls = {"n": 0}
+
+    def counting_run(command, **kwargs):
+        calls["n"] += 1
+        fake_run(command, **kwargs)
+
+    monkeypatch.setattr("app.voice.tts.subprocess.run", counting_run)
+    tts._synthesize_blocking("Вторая фраза")
+    assert calls["n"] == 1

@@ -41,6 +41,9 @@ hiddenimports += collect_submodules("openpyxl")
 hiddenimports += collect_submodules("reportlab")
 binaries += collect_dynamic_libs("reportlab")
 hiddenimports += ["sounddevice", "numpy"]
+# comtypes drives the in-process SAPI voice; dynamic dispatch avoids the
+# generated-wrapper cache, but the package submodules must still be bundled
+hiddenimports += collect_submodules("comtypes")
 
 a = Analysis(
     ["run.py"],

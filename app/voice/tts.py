@@ -18,6 +18,7 @@ import tempfile
 from pathlib import Path
 
 from ..config import TtsConfig
+from .sapi_com import decode_wav as decode_wav_bytes
 
 log = logging.getLogger(__name__)
 
@@ -57,14 +58,74 @@ class MockTts(TTSProvider):
 class SapiTts(TTSProvider):
     """Offline Windows voice via the built-in System.Speech (SAPI) engine.
 
-    Renders each phrase to a WAV file through PowerShell (no third-party
-    dependency, works without internet or API keys), then decodes and
-    resamples the WAV into the pipeline's 16-bit mono PCM contract.
+    Primary path is an in-process COM renderer (no process spawn per phrase,
+    sub-100 ms overhead). The PowerShell subprocess renderer is kept as an
+    automatic fallback when the COM stack is unavailable, and total failure
+    degrades to short silence so a live call never crashes.
     """
 
     def __init__(self, config: TtsConfig):
         self.cfg = config
         self.sample_rate = config.sample_rate
+        self._native = None          # type: ignore[assignment]
+        self._native_disabled = False
+
+    def _rate(self) -> int:
+        return max(-10, min(10, round((self.cfg.speed - 1.0) * 4)))
+
+    def _finish(self, pcm: bytes, src_rate: int, channels: int) -> bytes:
+        from ..core.audio import resample_linear, to_mono
+
+        return resample_linear(to_mono(pcm, channels), src_rate, self.sample_rate)
+
+    def _render_native(self, text: str) -> bytes:
+        """In-process SAPI over comtypes; raises when the stack is missing."""
+        if self._native_disabled:
+            raise RuntimeError("native SAPI previously failed")
+        if self._native is None:
+            from .sapi_com import NativeSapiRenderer  # noqa: PLC0415
+
+            self._native = NativeSapiRenderer(rate=self._rate())
+        wav = self._native.render_wav(text)
+        pcm, src_rate, channels = decode_wav_bytes(wav)
+        return self._finish(pcm, src_rate, channels)
+
+    def _render_powershell(self, text: str) -> bytes:
+        """Fallback: System.Speech through a PowerShell child process."""
+        from ..core.audio import read_wav
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as fh:
+            wav_path = fh.name
+        try:
+            encoded = self._powershell_command(text, wav_path, self._rate())
+            command = (
+                ["powershell.exe", "-NoProfile", "-NonInteractive",
+                 "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded]
+                if sys.platform == "win32"
+                else ["pwsh", "-NoProfile", "-NonInteractive",
+                      "-EncodedCommand", encoded]
+            )
+            subprocess.run(command, check=True, capture_output=True, timeout=30)
+            pcm, src_rate, channels = read_wav(Path(wav_path))
+            return self._finish(pcm, src_rate, channels)
+        finally:
+            try:
+                Path(wav_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _synthesize_blocking(self, text: str) -> bytes:
+        try:
+            return self._render_native(text)
+        except Exception:  # noqa: BLE001 - first failure disables native path
+            log.warning("in-process SAPI unavailable, trying PowerShell fallback",
+                        exc_info=True)
+            self._native_disabled = True
+        try:
+            return self._render_powershell(text)
+        except Exception:  # noqa: BLE001 - speech must never break a live call
+            log.exception("SAPI synthesis failed; returning silence")
+            return b"\x00\x00" * (self.sample_rate // 4)  # 0.25 s silence
 
     @staticmethod
     def _powershell_command(text: str, wav_path: str, rate: int) -> str:
@@ -87,34 +148,6 @@ $s.Dispose()
 """
         # -EncodedCommand expects UTF-16LE base64
         return base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-
-    def _synthesize_blocking(self, text: str) -> bytes:
-        from ..core.audio import read_wav, resample_linear, to_mono
-
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as fh:
-            wav_path = fh.name
-        try:
-            rate = max(-10, min(10, round((self.cfg.speed - 1.0) * 4)))
-            encoded = self._powershell_command(text, wav_path, rate)
-            command = (
-                ["powershell.exe", "-NoProfile", "-NonInteractive",
-                 "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded]
-                if sys.platform == "win32"
-                else ["pwsh", "-NoProfile", "-NonInteractive",
-                      "-EncodedCommand", encoded]
-            )
-            subprocess.run(command, check=True, capture_output=True, timeout=30)
-            pcm, src_rate, channels = read_wav(Path(wav_path))
-            pcm = to_mono(pcm, channels)
-            return resample_linear(pcm, src_rate, self.sample_rate)
-        except Exception:  # noqa: BLE001 - speech must never break a live call
-            log.exception("SAPI synthesis failed; returning silence")
-            return b"\x00\x00" * (self.sample_rate // 4)  # 0.25 s silence
-        finally:
-            try:
-                Path(wav_path).unlink(missing_ok=True)
-            except OSError:
-                pass
 
     async def synthesize(self, text: str) -> bytes:
         if not text.strip():

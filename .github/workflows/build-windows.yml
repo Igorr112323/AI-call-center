@@ -49,7 +49,11 @@ jobs:
       - name: Headless self-check before packaging
         run: python run.py --selfcheck
 
-      - name: Verify built-in Windows SAPI voice synthesizes
+      - name: Verify in-process SAPI voice (comtypes, no process spawn)
+        shell: powershell
+        run: |
+          python -c "import io, wave; from app.voice.sapi_com import NativeSapiRenderer, decode_wav; r = NativeSapiRenderer(rate=1); wav = r.render_wav('Проверка голосового движка'); pcm, rate, ch = decode_wav(wav); assert rate > 0 and len(pcm) > 1000; print(f'Native SAPI OK: {rate} Hz, {len(pcm)} PCM bytes')"
+      - name: Verify SAPI PowerShell fallback path
         shell: powershell
         run: |
           Add-Type -AssemblyName System.Speech
@@ -61,7 +65,7 @@ jobs:
           if (-not (Test-Path $out) -or (Get-Item $out).Length -lt 1000) {
             throw "SAPI did not produce a valid WAV"
           }
-          Write-Host "SAPI smoke OK, WAV size: $((Get-Item $out).Length) bytes"
+          Write-Host "SAPI fallback OK, WAV size: $((Get-Item $out).Length) bytes"
 
       - name: Build onefile executable
         run: pyinstaller VoiceSalesAgent.spec --noconfirm
