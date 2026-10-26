@@ -52,7 +52,30 @@ jobs:
       - name: Verify in-process SAPI voice (comtypes, no process spawn)
         shell: powershell
         run: |
-          python -c "import io, wave; from app.voice.sapi_com import NativeSapiRenderer, decode_wav; r = NativeSapiRenderer(rate=1); wav = r.render_wav('Проверка голосового движка'); pcm, rate, ch = decode_wav(wav); assert rate > 0 and len(pcm) > 1000; print(f'Native SAPI OK: {rate} Hz, {len(pcm)} PCM bytes')"
+          $py = @'
+          import traceback
+          try:
+              import comtypes
+              print("comtypes", getattr(comtypes, "__version__", "?"))
+              from app.voice.sapi_com import NativeSapiRenderer, decode_wav
+              r = NativeSapiRenderer(rate=1)
+              wav = r.render_wav("Проверка голосового движка")
+              pcm, rate, ch = decode_wav(wav)
+              assert rate > 0 and len(pcm) > 1000
+              print(f"Native SAPI OK: {rate} Hz, {len(pcm)} PCM bytes")
+          except Exception:
+              traceback.print_exc()
+              raise
+          '@
+          Set-Content -Path "$env:TEMP\sapi_native_smoke.py" -Value $py -Encoding utf8
+          python "$env:TEMP\sapi_native_smoke.py" *> "$env:TEMP\sapi_native.log"
+          if ($LASTEXITCODE -ne 0) {
+            $msg = ((Get-Content "$env:TEMP\sapi_native.log") -join ' | ')
+            if ($msg.Length -gt 1400) { $msg = $msg.Substring($msg.Length - 1400) }
+            Write-Host "::error::$msg"
+            exit 1
+          }
+          Get-Content "$env:TEMP\sapi_native.log"
       - name: Verify SAPI PowerShell fallback path
         shell: powershell
         run: |

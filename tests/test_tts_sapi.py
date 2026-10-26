@@ -159,24 +159,27 @@ class _FakeTokens:
         return object()
 
 
-class _FakeVoiceToken:
-    def GetDescription(self):
-        return "Microsoft Irina Desktop"
-
-
 class _FakeVoice:
-    def __init__(self, russian_voices: int = 1, getdata: bytes | tuple = b""):
+    def __init__(self, russian_voices: int = 1, getdata: bytes | tuple = b"",
+                 setvoice_raises: bool = False, propget_raises: bool = False):
         self.russian_voices = russian_voices
         self._getdata = getdata
+        self._setvoice_raises = setvoice_raises
         self.Rate = None
         self.Volume = None
         self.AudioOutputStream = None
         self.Voice = None
+        self.setvoice_calls = []
         self.calls = []
 
     def GetVoices(self, attribute):
         assert attribute == "Language=419"
         return _FakeTokens(self.russian_voices)
+
+    def SetVoice(self, token):
+        if self._setvoice_raises:
+            raise OSError("SetVoice unsupported")
+        self.setvoice_calls.append(token)
 
     def Speak(self, text, flags):
         self.calls.append((text, flags))
@@ -191,7 +194,7 @@ class _FakeStream:
 
 
 def _install_fake_comtypes(monkeypatch, *, russian_voices=1, payload=None,
-                           create_error=None):
+                           create_error=None, setvoice_raises=False):
     payload = _wav_bytes() if payload is None else payload
     state = {"voice": None, "coinit": 0}
 
@@ -208,7 +211,8 @@ def _install_fake_comtypes(monkeypatch, *, russian_voices=1, payload=None,
         if create_error is not None:
             raise create_error
         if progid == "SAPI.SpVoice":
-            voice = _FakeVoice(russian_voices)
+            voice = _FakeVoice(russian_voices,
+                               setvoice_raises=setvoice_raises)
             state["voice"] = voice
             return voice
         if progid == "SAPI.SpMemoryStream":
@@ -231,7 +235,8 @@ def test_native_renderer_binds_com_and_renders_in_process(monkeypatch):
     assert state["coinit"] >= 1
     assert voice.Rate == 2 and voice.Volume == 90
     assert isinstance(voice.AudioOutputStream, _FakeStream)
-    assert voice.Voice is not None  # Russian token auto-selected
+    assert len(voice.setvoice_calls) == 1  # Russian token via SetVoice method
+    assert voice.Voice is None              # no ambiguous property put
     assert voice.calls == [("Здравствуйте", sapi_com.SVSF_PURGE_BEFORE_SPEAK)]
     assert wav[:4] == b"RIFF"
 
@@ -246,8 +251,19 @@ def test_native_renderer_without_russian_voice_keeps_default(monkeypatch):
     state = _install_fake_comtypes(monkeypatch, russian_voices=0)
     renderer = NativeSapiRenderer()
     renderer.render_wav("Текст")
-    assert state["voice"].Voice is None  # default system voice retained
-    assert state["voice"].calls  # synthesis still happened
+    voice = state["voice"]
+    assert voice.Voice is None and voice.setvoice_calls == []
+    assert voice.calls  # synthesis still happened
+
+
+def test_native_renderer_falls_back_to_property_put(monkeypatch):
+    state = _install_fake_comtypes(monkeypatch, setvoice_raises=True)
+    renderer = NativeSapiRenderer()
+    renderer.render_wav("Метод не поддержан")
+    voice = state["voice"]
+    assert len(voice.setvoice_calls) == 0
+    assert voice.Voice is not None  # property assignment fallback worked
+    assert voice.calls
 
 
 def test_native_renderer_accepts_tuple_getdata(monkeypatch):

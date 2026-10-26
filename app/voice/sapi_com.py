@@ -54,20 +54,35 @@ class NativeSapiRenderer:
         except Exception as exc:  # noqa: BLE001
             raise NativeSapiError(f"SAPI COM objects unavailable: {exc}") from exc
 
-        try:
-            tokens = voice.GetVoices(RUSSIAN_VOICE_ATTRIBUTE)
-            if tokens.Count:
-                voice.Voice = tokens.Item(0)
-                log.info("SAPI selected Russian voice: %s",
-                         voice.Voice.GetDescription())
-        except Exception:  # noqa: BLE001 - default voice still speaks
-            log.warning("Russian SAPI voice not found, keeping system default")
+        self._select_russian_voice(voice)
 
         voice.Rate = self.rate
         voice.Volume = self.volume
         voice.AudioOutputStream = stream
         self._local.voice = voice
         self._local.stream = stream
+
+    @staticmethod
+    def _select_russian_voice(voice) -> None:
+        """Pick an installed ru-RU voice without propput/propputref ambiguity.
+
+        Dynamic dispatch sends PROPERTYPUTREF for object values while SAPI's
+        Voice property is declared propput; the SetVoice method sidesteps
+        this, the property assignment remains a second fallback.
+        """
+        try:
+            tokens = voice.GetVoices(RUSSIAN_VOICE_ATTRIBUTE)
+            if not tokens.Count:
+                log.info("No Russian SAPI voice installed, using system default")
+                return
+            token = tokens.Item(0)
+            try:
+                voice.SetVoice(token)
+            except Exception:  # noqa: BLE001
+                voice.Voice = token
+            log.info("SAPI selected Russian voice")
+        except Exception:  # noqa: BLE001 - default voice still speaks
+            log.warning("Russian SAPI voice selection failed, keeping default")
 
     @staticmethod
     def _as_bytes(data) -> bytes:
