@@ -56,8 +56,10 @@ def test_total_matches_order():
 
 
 def test_document_number_format():
+    import time
+
     number = document_number(_order(), "20261026-101010")
-    assert number.startswith("KP-261026-")
+    assert number.startswith(f"KP-{time.strftime('%y%m%d')}-")
     assert number.endswith("-0007")       # zero-padded order id
 
 

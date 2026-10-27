@@ -16,6 +16,7 @@ reportlab>=4.0
 pillow>=10.0
 comtypes>=1.4.0; platform_system == "Windows"
 piper-tts>=1.2,<2; platform_system == "Windows"
+edge-tts>=7.0,<8
 sounddevice>=0.4
 numpy>=1.26
 

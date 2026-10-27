@@ -160,6 +160,55 @@ jobs:
           # preserve line boundaries so ::warning/::error commands parse
           Get-Content "$env:TEMP\sapi_native.out", "$env:TEMP\sapi_native.err" `
             -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+      - name: Verify Edge online neural voice (Russian, no API key)
+        shell: powershell
+        run: |
+          $py = @'
+          import asyncio
+          import sys
+          import traceback
+          try:
+              sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+              sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+              from app.config import TtsConfig
+              from app.voice.edge_tts_provider import EdgeTts, EdgeUnavailable
+              phrase = "\u0417\u0434\u0440\u0430\u0432\u0441\u0442\u0432\u0443\u0439\u0442\u0435! \u042d\u0442\u043e \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u043d\u0435\u0439\u0440\u043e\u0441\u0435\u0442\u0435\u0432\u043e\u0433\u043e \u0433\u043e\u043b\u043e\u0441\u0430."
+              tts = EdgeTts(TtsConfig(provider="edge", sample_rate=24000))
+              pcm = b""
+              for attempt in (1, 2):
+                  try:
+                      pcm = asyncio.run(tts.synthesize(phrase))
+                      break
+                  except EdgeUnavailable as exc:
+                      if attempt == 2:
+                          raise
+                      print("retry after:", exc, flush=True)
+              print("Edge PCM bytes:", len(pcm), flush=True)
+              assert len(pcm) > 20000, "edge synthesis produced too little audio"
+              print("Edge neural smoke OK", flush=True)
+          except Exception:
+              msg = " | ".join(traceback.format_exc().splitlines())[:1450]
+              print(f"::error title=Edge neural smoke failed::{msg}", flush=True)
+              raise
+          '@
+          Set-Content -Path "$env:TEMP\edge_smoke.py" -Value $py -Encoding utf8
+          $env:PYTHONPATH = (Get-Location).Path
+          $ErrorActionPreference = "Continue"
+          $proc = Start-Process -FilePath "python" `
+            -ArgumentList "-u `"$env:TEMP\edge_smoke.py`"" `
+            -Wait -PassThru -NoNewWindow `
+            -RedirectStandardOutput "$env:TEMP\edge_smoke.out" `
+            -RedirectStandardError "$env:TEMP\edge_smoke.err"
+          if ($proc.ExitCode -ne 0) {
+            $joined = ((Get-Content "$env:TEMP\edge_smoke.out", "$env:TEMP\edge_smoke.err" `
+              -ErrorAction SilentlyContinue) -join " | ")
+            if ($joined.Length -gt 1400) { $joined = $joined.Substring($joined.Length - 1400) }
+            Write-Host "::error title=Edge neural smoke failed::$joined"
+            throw "Edge neural smoke failed (see annotation)"
+          }
+          Get-Content "$env:TEMP\edge_smoke.out", "$env:TEMP\edge_smoke.err" `
+            -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+
       - name: Verify SAPI PowerShell fallback path
         shell: powershell
         run: |

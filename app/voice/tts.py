@@ -20,6 +20,7 @@ import tempfile
 from pathlib import Path
 
 from ..config import TtsConfig
+from .edge_tts_provider import EdgeTts, EdgeUnavailable
 from .piper_tts import PiperTts, is_piper_available
 from .sapi_com import decode_wav as decode_wav_bytes
 
@@ -301,6 +302,17 @@ def _native_chain(config: TtsConfig, *, prefer: str) -> TTSProvider:
     return ChainedTts(chain, config.sample_rate)
 
 
+def _full_chain(config: TtsConfig) -> TTSProvider:
+    """Best-quality chain: online Edge neural -> offline Piper -> SAPI -> tone."""
+    chain = [EdgeTts(config)]
+    if is_piper_available():
+        chain.append(PiperTts(config))
+    if sys.platform == "win32":
+        chain.append(SapiTts(config))
+    chain.append(MockTts(config))
+    return ChainedTts(chain, config.sample_rate)
+
+
 def build_tts(config: TtsConfig) -> TTSProvider:
     if config.provider == "yandex_v3":
         return YandexTtsV3(config)
@@ -309,6 +321,9 @@ def build_tts(config: TtsConfig) -> TTSProvider:
     if config.provider == "mock":
         log.info("TTS running in mock mode")
         return MockTts(config)
+    if config.provider == "edge":
+        log.info("TTS running on Edge online neural voice")
+        return _full_chain(config)
     if config.provider == "piper":
         if is_piper_available():
             log.info("TTS running on bundled Piper neural voice")
@@ -326,11 +341,6 @@ def build_tts(config: TtsConfig) -> TTSProvider:
         log.warning("SAPI TTS selected but host is %s; falling back to mock",
                     sys.platform)
         return MockTts(config)
-    # "auto" (default): neural Piper -> OS SAPI -> tone stub
-    if is_piper_available():
-        log.info("TTS auto-selected bundled Piper neural voice")
-    elif sys.platform == "win32":
-        log.info("TTS auto-selected built-in Windows SAPI voice")
-    else:
-        log.info("TTS auto-selected mock mode (no native speech engine)")
-    return _native_chain(config, prefer="auto")
+    # "auto" (default): Edge neural -> Piper -> OS SAPI -> tone stub
+    log.info("TTS auto chain: Edge neural, then offline fallbacks")
+    return _full_chain(config)

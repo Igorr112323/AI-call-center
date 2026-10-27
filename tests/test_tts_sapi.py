@@ -106,11 +106,18 @@ async def test_empty_text_short_circuits():
 
 
 def test_build_tts_falls_back_to_mock_off_windows():
-    # Linux/macOS hosts cannot run SAPI; auto and sapi both degrade to the tone
+    # Linux/macOS hosts cannot run SAPI; the auto chain keeps Edge (online,
+    # cross-platform) plus a mock tail, while explicit sapi degrades to tone.
     import sys
     if sys.platform == "win32":
         pytest.skip("platform fallback behaviour is non-Windows specific")
-    assert isinstance(build_tts(TtsConfig(provider="auto")), MockTts)
+    from app.voice.edge_tts_provider import EdgeTts
+    from app.voice.tts import ChainedTts
+
+    auto = build_tts(TtsConfig(provider="auto"))
+    assert isinstance(auto, ChainedTts)
+    assert isinstance(auto.providers[0], EdgeTts)
+    assert isinstance(auto.providers[-1], MockTts)
     assert isinstance(build_tts(TtsConfig(provider="sapi")), MockTts)
     assert isinstance(build_tts(TtsConfig(provider="mock")), MockTts)
 

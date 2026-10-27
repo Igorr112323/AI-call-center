@@ -72,7 +72,7 @@ class SttConfig:
 
 @dataclass
 class TtsConfig:
-    provider: str = "auto"                   # auto | piper | sapi | mock | yandex_v3 | f5
+    provider: str = "auto"   # auto | edge | piper | sapi | mock | yandex_v3 | f5
     api_key: str = ""
     folder_id: str = ""
     voice: str = "alena"

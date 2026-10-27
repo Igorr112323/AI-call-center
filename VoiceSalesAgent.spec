@@ -54,6 +54,13 @@ for _pkg in ("piper", "onnxruntime"):
     datas += _d
     binaries += _b
     hiddenimports += _h
+# Edge online neural voice: pure-python websocket client plus aiohttp;
+# soundfile bundles the libsndfile DLL used to decode its MP3 stream
+for _pkg in ("edge_tts", "aiohttp", "soundfile"):
+    _d, _b, _h = collect_all(_pkg)
+    datas += _d
+    binaries += _b
+    hiddenimports += _h
 # the neural voice model itself is downloaded by CI before packaging
 _piper_dir = Path("app/resources/piper")
 if _piper_dir.is_dir():

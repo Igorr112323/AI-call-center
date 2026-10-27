@@ -78,7 +78,7 @@ class TelephonyTab(QWidget):
         self.stt_provider.addItems(["mock", "yandex_v3", "faster_whisper"])
         self.tts_provider = QComboBox()
         self.tts_provider.addItems(
-            ["auto", "piper", "sapi", "mock", "yandex_v3", "f5"])
+            ["auto", "edge", "piper", "sapi", "mock", "yandex_v3", "f5"])
         self.voice_name = QLineEdit()
         self.voice_name.setPlaceholderText("alena")
         self.emotion = QComboBox()
@@ -90,6 +90,14 @@ class TelephonyTab(QWidget):
         voice_form.addRow("Эмоциональная окраска", self.emotion)
         voice_form.addRow("Скорость речи", self.speed)
         voice_card.layout().addLayout(voice_form)
+        tts_hint = QLabel(
+            "auto: живой нейроголос Edge (онлайн) с откатом на офлайн Piper и "
+            "системный SAPI. edge — самый естественный голос, piper — полностью "
+            "офлайн, mock — диагностический тон."
+        )
+        tts_hint.setProperty("role", "muted")
+        tts_hint.setWordWrap(True)
+        voice_card.layout().addWidget(tts_hint)
         root.addWidget(voice_card)
 
         # --------------------------------------------------------------- VAD
@@ -138,6 +146,13 @@ class TelephonyTab(QWidget):
         api_form.addRow("Groq API-ключ", self.groq_key)
         api_form.addRow("LLM-модель", self.llm_model)
         api_card.layout().addLayout(api_form)
+        groq_hint = QLabel(
+            "Бесплатный Groq API-ключ: console.groq.com/keys. С ним диалоги ведёт "
+            "умный LLM Llama 3.3 70B; без ключа работает офлайн-движок по сценарию."
+        )
+        groq_hint.setProperty("role", "muted")
+        groq_hint.setWordWrap(True)
+        api_card.layout().addWidget(groq_hint)
         root.addWidget(api_card)
 
         notif_card = Card()

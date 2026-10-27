@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import enum
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 
 from ..config import ScenarioConfig
@@ -104,6 +105,73 @@ SILENCE_PROMPTS = (
     "Связь прервалась — перезвоним, как только она восстановится. До свидания.",
 )
 
+# Several natural phrasings per slot: the offline brain rotates them so the
+# same missing parameter never triggers the identical robotic question twice.
+_SLOT_QUESTION_VARIANTS: dict[str, tuple[str, ...]] = {
+    "category": (
+        "Какое оборудование вас интересует?",
+        "Подскажите, что подбираем — актуаторы, рукава высокого давления или коробки?",
+        "По какому типу оборудования делаем подбор?",
+    ),
+    "voltage": (
+        "Какое напряжение питания нужно?",
+        "Уточните напряжение, например 12, 24 или 220 вольт.",
+        "На сколько вольт подбираем оборудование?",
+    ),
+    "stroke_mm": (
+        "Какой ход штока, в миллиметрах?",
+        "Уточните длину хода штока в миллиметрах.",
+        "Сколько миллиметров рабочего хода нужно?",
+    ),
+    "force_n": (
+        "Какое рабочее усилие требуется?",
+        "Уточните необходимое усилие в ньютонах.",
+    ),
+    "quantity": (
+        "Сколько единиц планируете заказывать?",
+        "Какое количество позиций нужно?",
+        "Сколько штук закладываем в заказ?",
+    ),
+    "delivery_city": (
+        "В какой город нужна доставка?",
+        "Куда организовать поставку?",
+    ),
+}
+
+_SLOT_LABELS = {
+    "category": "тип оборудования",
+    "voltage": "напряжение",
+    "stroke_mm": "ход штока",
+    "force_n": "усилие",
+    "quantity": "количество",
+    "delivery_city": "город доставки",
+}
+
+_GREETING_WORDS = (
+    "привет", "здравствуй", "добрый день", "доброе утро", "добрый вечер",
+    "здарова", "хай", "доброго дня",
+)
+_THANKS_WORDS = ("спасибо", "благодарю", "спс", "благодарность")
+_CAPABILITY_WORDS = (
+    "что ты умеешь", "чем можешь помочь", "твои возможности",
+    "что умеешь", "умеешь", "помоги с", "чем поможешь", "твои функции",
+)
+_REPEAT_WORDS = ("повтори", "не расслышал", "не понял", "что-что", "ещё раз")
+
+_CAPABILITY_REPLY = (
+    "Я подбираю оборудование по вашим параметрам, проверяю цену и наличие по "
+    "складу, считаю сумму заказа и сразу фиксирую заявку."
+)
+_HUMAN_HANDOFF = (
+    "Если удобнее, оставьте номер и удобное время — передам живому менеджеру, "
+    "он перезвонит и сам всё зафиксирует."
+)
+# System nudge injected when a cloud LLM parrots its previous reply verbatim.
+_ANTI_LOOP_NUDGE = (
+    "Ты дословно повторил предыдущий ответ. Не повторяйся: задай один конкретный "
+    "вопрос по следующему недостающему параметру или предложи следующий шаг."
+)
+
 
 class DialogManager:
     """One instance per live call."""
@@ -119,6 +187,12 @@ class DialogManager:
         self.order: Order | None = None
         self.silence_count = 0
         self._objection_hits: dict[str, int] = {}
+        # Anti-loop machinery for the deterministic brain
+        self._slot_ask_counts: dict[str, int] = {}
+        self._last_question_slot: str | None = None
+        self._unrecognized = 0
+        self._recent_replies: deque[str] = deque(maxlen=5)
+        self._recent_user_texts: deque[str] = deque(maxlen=3)
 
     def open_greeting(self) -> str:
         self._transition(DialogState.COLLECTING)
@@ -157,7 +231,19 @@ class DialogManager:
                 self.messages.append(assistant.as_chat_message())
 
                 if not assistant.tool_calls:
-                    reply = assistant.content or "Простите, повторите, пожалуйста."
+                    content = assistant.content or "Простите, повторите, пожалуйста."
+                    # Anti-loop: if the cloud model parrots its previous reply,
+                    # nudge it once to ask the next concrete question instead.
+                    previous = next(
+                        (m.get("content") for m in reversed(self.messages[:-1])
+                         if m.get("role") == "assistant" and m.get("content")),
+                        None,
+                    )
+                    if content == previous:
+                        self.messages.append(
+                            {"role": "system", "content": _ANTI_LOOP_NUDGE})
+                        continue
+                    reply = content
                     break
 
                 for call in assistant.tool_calls:
@@ -211,22 +297,33 @@ class DialogManager:
                 self._objection_hits[trigger] = hits + 1
                 reply = rule["response"] if hits == 0 else _OBJECTION_FOLLOWUPS.get(
                     trigger, rule["response"])
+                self._unrecognized = 0
+                reply = self._unique_reply(reply)
                 self._advance_state(text, [])
                 self.messages.append({"role": "assistant", "content": reply})
                 return self._result(reply, tool_names)
 
+        ack = self._smalltalk_ack(lowered)
         params = extract_params(text)
         category = next((w for w in _CATEGORY_WORDS if w in lowered), None)
         if category:
             params["category"] = category
-        if params:
+        progress = bool(params)
+        if progress:
+            self._unrecognized = 0
             await self.executor.execute("collect_slots", params)
             tool_names.append("collect_slots")
+        else:
+            self._unrecognized += 1
 
         # Slot change invalidated the provisional quote/order — drop the stale
         # local order object so the flow re-quotes instead of double-booking.
         if self.executor.last_product is None and self.order is not None:
             self.order = None
+
+        normalized_text = text.strip().lower()
+        repeated_input = normalized_text in self._recent_user_texts
+        self._recent_user_texts.append(normalized_text)
 
         if self.executor.last_product and any(w in lowered for w in _CONFIRM_WORDS):
             if self.state is DialogState.ORDER_CREATED:
@@ -234,6 +331,7 @@ class DialogManager:
                     f"Заказ {self.order.number_1c if self.order else ''} уже "
                     "зафиксирован. Если нужно изменить параметры — назовите их, пересчитаю."
                 ).replace("  ", " ").strip()
+                reply = self._unique_reply(reply)
                 self.messages.append({"role": "assistant", "content": reply})
                 return self._result(reply, tool_names)
             result = await self.executor.execute("create_order", {})
@@ -247,10 +345,16 @@ class DialogManager:
                 "force_n": self.executor.slots.get("force_n"),
             })
             tool_names.append("check_catalog_and_price")
+            self._unrecognized = 0
             reply = self._offline_quote_reply()
+        elif not progress and (self._unrecognized >= 2 or repeated_input):
+            # Off-script or repeated misunderstood phrase: steer with a summary
+            reply = self._confused_reply()
         else:
-            reply = self._next_slot_question()
+            question = self._next_slot_question()
+            reply = f"{ack} {question}".strip() if ack else question
 
+        reply = self._unique_reply(reply)
         self._advance_state(text, tool_names)
         if self.executor.order_result and self.order is None:
             self.order = self._build_order(self.executor.order_result)
@@ -265,8 +369,61 @@ class DialogManager:
     def _next_slot_question(self) -> str:
         for slot in self.scenario.slots:
             if slot.required and not self.executor.slots.get(slot.name):
-                return slot.question
+                variants = _SLOT_QUESTION_VARIANTS.get(slot.name, (slot.question,))
+                n = self._slot_ask_counts.get(slot.name, 0)
+                self._slot_ask_counts[slot.name] = n + 1
+                self._last_question_slot = slot.name
+                return variants[n % len(variants)]
         return "Продиктуйте, пожалуйста, параметры оборудования."
+
+    def _collected_summary(self) -> str:
+        """Human-readable list of slots already captured in this call."""
+        parts = []
+        for name, value in self.executor.slots.items():
+            if value in (None, "", 0):
+                continue
+            label = _SLOT_LABELS.get(name, name)
+            parts.append(f"{label}: {value}")
+        return ", ".join(parts)
+
+    def _smalltalk_ack(self, lowered: str) -> str:
+        """Recognise greetings/thanks/capability/repeat requests off-script."""
+        if any(w in lowered for w in _GREETING_WORDS):
+            return "Здравствуйте!"
+        if any(w in lowered for w in _THANKS_WORDS):
+            return "Пожалуйста!"
+        if any(w in lowered for w in _REPEAT_WORDS):
+            return "Конечно, повторяю."
+        if any(w in lowered for w in _CAPABILITY_WORDS):
+            return _CAPABILITY_REPLY
+        return ""
+
+    def _confused_reply(self) -> str:
+        """Steering answer when the customer says nothing the parser understands."""
+        pieces = []
+        if collected := self._collected_summary():
+            pieces.append(f"Пока зафиксировал: {collected}.")
+        if missing := [_SLOT_LABELS.get(s, s) for s in self.missing_required_slots()]:
+            pieces.append("Не хватает: " + ", ".join(missing) + ".")
+        pieces.append(self._next_slot_question())
+        if self._unrecognized >= 3:
+            pieces.append(_HUMAN_HANDOFF)
+        return " ".join(pieces)
+
+    def _unique_reply(self, reply: str) -> str:
+        """Never emit the same sentence twice; rotate variants or paraphrase."""
+        if reply not in self._recent_replies:
+            self._recent_replies.append(reply)
+            return reply
+        if self._last_question_slot:
+            variants = _SLOT_QUESTION_VARIANTS.get(self._last_question_slot, ())
+            for alt in variants:
+                if alt not in self._recent_replies:
+                    self._recent_replies.append(alt)
+                    return alt
+        wrapped = "Уточню ещё раз: " + reply[0].lower() + reply[1:]
+        self._recent_replies.append(wrapped)
+        return wrapped
 
     def _offline_quote_reply(self) -> str:
         product = self.executor.last_product
@@ -297,13 +454,14 @@ class DialogManager:
         """Deterministic degradation when the LLM endpoint is unreachable."""
         for rule in self.scenario.objections:
             if rule["trigger"].lower() in self.messages[-1].get("content", "").lower():
-                return rule["response"]
-        for slot in self.scenario.slots:
-            if slot.required and not self.executor.slots.get(slot.name):
-                return slot.question
+                return self._unique_reply(rule["response"])
+        if self.missing_required_slots():
+            return self._unique_reply(self._next_slot_question())
         if self.executor.last_product:
-            return "Давайте зафиксируем заказ — согласовываем?"
-        return "Простите, связь с моделью нестабильна. Продублируйте, пожалуйста, ещё раз."
+            return self._unique_reply(
+                "Давайте зафиксируем заказ — согласовываем?")
+        return self._unique_reply(
+            "Простите, связь с моделью нестабильна. Продублируйте, пожалуйста, ещё раз.")
 
     def _advance_state(self, user_text: str, tool_names: list[str]) -> None:
         if "create_order" in tool_names and self.executor.order_result:

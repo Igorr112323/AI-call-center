@@ -11,6 +11,7 @@ reportlab>=4.0
 pillow>=10.0
 comtypes>=1.4.0
 piper-tts>=1.2,<2
+edge-tts>=7.0,<8
 sounddevice>=0.4
 numpy>=1.26
 soundfile>=0.12
